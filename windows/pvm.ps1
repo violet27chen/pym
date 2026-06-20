@@ -36,11 +36,12 @@ $OutputEncoding = [System.Text.Encoding]::UTF8
 
 # Configuration
 $script:PVM_VERSION = "1.0.0"
-$script:PVM_HOME = Join-Path $env:USERPROFILE ".pvm"
+$script:PVM_HOME = if ($env:PVM_HOME) { $env:PVM_HOME } else { Join-Path $env:USERPROFILE ".pvm" }
 $script:PVM_VERSIONS_DIR = Join-Path $script:PVM_HOME "versions"
 $script:PVM_CURRENT_FILE = Join-Path $script:PVM_HOME "current"
 $script:PVM_SETTINGS_FILE = Join-Path $script:PVM_HOME "settings.json"
 $script:PVM_SYMLINK = Join-Path $script:PVM_HOME "python"
+$script:PVM_SHIMS_DIR = Join-Path $script:PVM_HOME "shims"
 
 # Default Python download mirror
 $script:DEFAULT_MIRROR = "https://www.python.org/ftp/python"
@@ -51,7 +52,6 @@ $script:MIRRORS = @{
     "tsinghua"  = "https://mirrors.tuna.tsinghua.edu.cn/python"
     "qinghua"   = "https://mirrors.tuna.tsinghua.edu.cn/python"
     "huawei"    = "https://mirrors.huaweicloud.com/python"
-    "npmmirror" = "https://registry.npmmirror.com/-/binary/python"
     "aliyun"    = "https://mirrors.aliyun.com/python"
 }
 
@@ -61,7 +61,6 @@ $script:PIP_MIRRORS = @{
     "tsinghua"  = "https://pypi.tuna.tsinghua.edu.cn/simple"
     "qinghua"   = "https://pypi.tuna.tsinghua.edu.cn/simple"
     "huawei"    = "https://repo.huaweicloud.com/repository/pypi/simple"
-    "npmmirror" = "https://registry.npmmirror.com/-/binary/pypi/simple"
     "aliyun"    = "https://mirrors.aliyun.com/pypi/simple"
 }
 
@@ -85,6 +84,9 @@ function Initialize-Pvm {
     }
     if (-not (Test-Path $script:PVM_VERSIONS_DIR)) {
         New-Item -ItemType Directory -Path $script:PVM_VERSIONS_DIR -Force | Out-Null
+    }
+    if (-not (Test-Path $script:PVM_SHIMS_DIR)) {
+        New-Item -ItemType Directory -Path $script:PVM_SHIMS_DIR -Force | Out-Null
     }
     if (-not (Test-Path $script:PVM_SETTINGS_FILE)) {
         $defaultSettings = @{
@@ -153,7 +155,6 @@ Options:
 Mirror Presets:
     tsinghua, qinghua       Tsinghua University (China)
     huawei                  Huawei Cloud (China)
-    npmmirror               npmmirror (China)
     aliyun                  Aliyun (China)
     default                 python.org (Official)
 
@@ -166,6 +167,10 @@ Examples:
 
 Configuration:
     pvm stores data in: $($script:PVM_HOME)
+
+Uninstall pvm:
+    Run uninstall.ps1 from the pvm repository to remove pvm completely.
+    See: pvm --help  ->  https://github.com/violet27chen/pym
 
 "@
     Write-Host $helpText
@@ -274,6 +279,30 @@ function Get-SystemArchitecture {
     }
 }
 
+function Resolve-PythonVersion {
+    <#
+    .SYNOPSIS
+        Resolve a partial version string to the latest full version.
+        e.g. "3.13" -> "3.13.2", "3" -> "3.13.2"
+    #>
+    param([string]$Version)
+
+    # Already a full version
+    if ($Version -match '^\d+\.\d+\.\d+$') {
+        return $Version
+    }
+
+    # Partial version: match from available versions (already sorted descending)
+    $matches = $script:AVAILABLE_VERSIONS | Where-Object { $_ -like "$Version*" -or $_ -like "$Version.*" }
+    if ($matches) {
+        $resolved = $matches[0]
+        Write-Host "Resolved version: $Version -> $resolved" -ForegroundColor DarkGray
+        return $resolved
+    }
+
+    return $null
+}
+
 function Install-PythonVersion {
     <#
     .SYNOPSIS
@@ -291,10 +320,23 @@ function Install-PythonVersion {
         Write-Host "Detected architecture: $Architecture" -ForegroundColor DarkGray
     }
     
-    # Validate version format
+    # Resolve partial version to full version
     if ($Version -notmatch '^\d+\.\d+\.\d+$') {
-        Write-Host "Error: Invalid version format. Use format like '3.12.4'" -ForegroundColor Red
-        return $false
+        if ($Version -match '^\d+(\.\d+)?$') {
+            $resolved = Resolve-PythonVersion -Version $Version
+            if ($resolved) {
+                $Version = $resolved
+            }
+            else {
+                Write-Host "Error: No matching version found for '$Version'" -ForegroundColor Red
+                Write-Host "Use 'pvm list available' to see available versions."
+                return $false
+            }
+        }
+        else {
+            Write-Host "Error: Invalid version format. Use format like '3.13', '3.13.2', or '3'" -ForegroundColor Red
+            return $false
+        }
     }
     
     # Check if already installed
@@ -383,6 +425,13 @@ function Install-PythonVersion {
             
             $pythonExe = Join-Path $versionDir "python.exe"
             & $pythonExe $getPipPath --no-warn-script-location 2>&1 | Out-Null
+            
+            # Install/upgrade setuptools and wheel for a complete environment
+            $pipExe = Join-Path $versionDir "Scripts\pip.exe"
+            if (Test-Path $pipExe) {
+                & $pipExe install --upgrade setuptools wheel --no-warn-script-location 2>&1 | Out-Null
+            }
+            
             Remove-Item -Path $getPipPath -Force -ErrorAction SilentlyContinue
         }
         catch {
@@ -428,6 +477,14 @@ function Uninstall-PythonVersion {
         [string]$Version
     )
     
+    # Resolve partial version to installed version
+    if ($Version -notmatch '^\d+\.\d+\.\d+$') {
+        $resolved = Resolve-InstalledVersion -Version $Version
+        if ($resolved) {
+            $Version = $resolved
+        }
+    }
+    
     $versionDir = Join-Path $script:PVM_VERSIONS_DIR $Version
     
     if (-not (Test-Path $versionDir)) {
@@ -444,7 +501,13 @@ function Uninstall-PythonVersion {
         }
         # Remove symlink
         if (Test-Path $script:PVM_SYMLINK) {
-            Remove-Item -Path $script:PVM_SYMLINK -Force -Recurse
+            $symItem = Get-Item $script:PVM_SYMLINK -Force -ErrorAction SilentlyContinue
+            if ($symItem -and $symItem.Attributes -band [System.IO.FileAttributes]::ReparsePoint) {
+                $symItem.Delete()
+            }
+            else {
+                Remove-Item -Path $script:PVM_SYMLINK -Force -Recurse
+            }
         }
     }
     
@@ -488,6 +551,102 @@ function Uninstall-PythonVersion {
     }
 }
 
+function Update-PvmShims {
+    <#
+    .SYNOPSIS
+        Create/update nvm-style shim scripts for instant version switching.
+        Shims read the current version file at runtime and forward to the
+        correct Python executable, so switching takes effect immediately
+        without restarting the terminal.
+    #>
+    if (-not (Test-Path $script:PVM_SHIMS_DIR)) {
+        New-Item -ItemType Directory -Path $script:PVM_SHIMS_DIR -Force | Out-Null
+    }
+
+    # --- python.cmd shim ---
+    $pythonShim = Join-Path $script:PVM_SHIMS_DIR "python.cmd"
+    $pythonShimContent = @'
+@echo off
+setlocal EnableDelayedExpansion
+if defined PVM_HOME (
+    set "PVM_H=%PVM_HOME%"
+) else (
+    set "PVM_H=%USERPROFILE%\.pvm"
+)
+set /p PVM_CURRENT=<"!PVM_H!\current"
+if "!PVM_CURRENT!"=="" (
+    echo Error: No Python version active. Run: pvm use ^<version^> 1>&2
+    exit /b 1
+)
+set "PVM_PYTHON=!PVM_H!\versions\!PVM_CURRENT!\python.exe"
+if not exist "!PVM_PYTHON!" (
+    echo Error: Python !PVM_CURRENT! executable not found. 1>&2
+    exit /b 1
+)
+"!PVM_PYTHON!" %*
+exit /b %errorlevel%
+'@
+    Set-Content -Path $pythonShim -Value $pythonShimContent -Encoding ASCII
+
+    # --- python3.cmd shim ---
+    $python3Shim = Join-Path $script:PVM_SHIMS_DIR "python3.cmd"
+    Copy-Item -Path $pythonShim -Destination $python3Shim -Force
+
+    # --- pip.cmd shim ---
+    $pipShim = Join-Path $script:PVM_SHIMS_DIR "pip.cmd"
+    $pipShimContent = @'
+@echo off
+setlocal EnableDelayedExpansion
+if defined PVM_HOME (
+    set "PVM_H=%PVM_HOME%"
+) else (
+    set "PVM_H=%USERPROFILE%\.pvm"
+)
+set /p PVM_CURRENT=<"!PVM_H!\current"
+if "!PVM_CURRENT!"=="" (
+    echo Error: No Python version active. Run: pvm use ^<version^> 1>&2
+    exit /b 1
+)
+set "PVM_PIP=!PVM_H!\versions\!PVM_CURRENT!\Scripts\pip.exe"
+if not exist "!PVM_PIP!" (
+    echo Error: pip not found for Python !PVM_CURRENT!. 1>&2
+    exit /b 1
+)
+"!PVM_PIP!" %*
+exit /b %errorlevel%
+'@
+    Set-Content -Path $pipShim -Value $pipShimContent -Encoding ASCII
+
+    # --- pip3.cmd shim ---
+    $pip3Shim = Join-Path $script:PVM_SHIMS_DIR "pip3.cmd"
+    Copy-Item -Path $pipShim -Destination $pip3Shim -Force
+}
+
+function Resolve-InstalledVersion {
+    <#
+    .SYNOPSIS
+        Resolve a partial version to the latest installed version.
+        e.g. "3.13" -> "3.13.2" (if 3.13.2 is installed)
+    #>
+    param([string]$Version)
+
+    # Already a full version
+    if ($Version -match '^\d+\.\d+\.\d+$') {
+        return $Version
+    }
+
+    # Match from installed versions
+    $installed = Get-InstalledVersions
+    $matches = $installed | Where-Object { $_ -like "$Version*" -or $_ -like "$Version.*" }
+    if ($matches) {
+        $resolved = $matches[0]
+        Write-Host "Resolved version: $Version -> $resolved" -ForegroundColor DarkGray
+        return $resolved
+    }
+
+    return $null
+}
+
 function Use-PythonVersion {
     <#
     .SYNOPSIS
@@ -497,6 +656,14 @@ function Use-PythonVersion {
         [Parameter(Mandatory = $true)]
         [string]$Version
     )
+    
+    # Resolve partial version to installed version
+    if ($Version -notmatch '^\d+\.\d+\.\d+$') {
+        $resolved = Resolve-InstalledVersion -Version $Version
+        if ($resolved) {
+            $Version = $resolved
+        }
+    }
     
     $versionDir = Join-Path $script:PVM_VERSIONS_DIR $Version
     
@@ -511,7 +678,15 @@ function Use-PythonVersion {
     
     # Create/update symlink
     if (Test-Path $script:PVM_SYMLINK) {
-        Remove-Item -Path $script:PVM_SYMLINK -Force -Recurse
+        $item = Get-Item $script:PVM_SYMLINK -Force -ErrorAction SilentlyContinue
+        if ($item -and $item.Attributes -band [System.IO.FileAttributes]::ReparsePoint) {
+            # Junction/symlink: remove without -Recurse to avoid deleting target contents
+            $item.Delete()
+        }
+        else {
+            # Regular directory (fallback copy): remove with -Recurse
+            Remove-Item -Path $script:PVM_SYMLINK -Force -Recurse
+        }
     }
     
     # Try to create symlink (requires admin or developer mode)
@@ -528,6 +703,9 @@ function Use-PythonVersion {
     Write-Host "  Switched to Python $Version" -ForegroundColor Green
     Write-Host "=============================================" -ForegroundColor Green
     Write-Host ""
+    
+    # Create/update nvm-style shims for instant version switching
+    Update-PvmShims
     
     # Show Python version
     $pythonExe = Join-Path $script:PVM_SYMLINK "python.exe"
@@ -550,14 +728,17 @@ function Use-PythonVersion {
         Write-Host "  Path:    $pythonExe" -ForegroundColor DarkGray
     }
     
-    # Check if pvm\python is in PATH
+    # Check if shims dir or pvm\python is in PATH
     $pvmPythonPath = $script:PVM_SYMLINK
     $currentPath = [Environment]::GetEnvironmentVariable("PATH", "User")
+    $shimsInPath = $currentPath -like "*$($script:PVM_SHIMS_DIR)*"
+    $pythonInPath = $currentPath -like "*$($script:PVM_SYMLINK)*"
     
-    if ($currentPath -notlike "*$pvmPythonPath*") {
+    if (-not $shimsInPath -and -not $pythonInPath) {
         Write-Host ""
-        Write-Host "  Warning: pvm Python path not in PATH" -ForegroundColor Yellow
+        Write-Host "  Warning: pvm paths not in PATH" -ForegroundColor Yellow
         Write-Host "  Add these paths to use pvm-managed Python:" -ForegroundColor Yellow
+        Write-Host "    $($script:PVM_SHIMS_DIR)" -ForegroundColor Cyan
         Write-Host "    $pvmPythonPath" -ForegroundColor Cyan
         Write-Host "    $pvmPythonPath\Scripts" -ForegroundColor Cyan
     }
@@ -668,7 +849,6 @@ function Set-PvmConfig {
         Write-Host "Available presets:" -ForegroundColor Yellow
         Write-Host "  tsinghua, qinghua   - Tsinghua University (https://mirrors.tuna.tsinghua.edu.cn/python)"
         Write-Host "  huawei              - Huawei Cloud (https://mirrors.huaweicloud.com/python)"
-        Write-Host "  npmmirror           - npmmirror (https://registry.npmmirror.com/-/binary/python)"
         Write-Host "  aliyun              - Aliyun (https://mirrors.aliyun.com/python)"
         Write-Host "  default             - python.org (https://www.python.org/ftp/python)"
         Write-Host ""
@@ -740,7 +920,6 @@ function Show-PvmConfig {
     Write-Host "Available presets (configures both Python and pip):" -ForegroundColor Yellow
     Write-Host "  pvm config tsinghua   - Tsinghua University"
     Write-Host "  pvm config huawei     - Huawei Cloud"
-    Write-Host "  pvm config npmmirror  - npmmirror"
     Write-Host "  pvm config aliyun     - Aliyun"
     Write-Host "  pvm config default    - python.org / pypi.org (Official)"
     Write-Host ""

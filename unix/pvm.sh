@@ -17,6 +17,7 @@ PVM_VERSIONS_DIR="$PVM_HOME/versions"
 PVM_CURRENT_FILE="$PVM_HOME/current"
 PVM_SETTINGS_FILE="$PVM_HOME/settings.json"
 PVM_SYMLINK="$PVM_HOME/python"
+PVM_SHIMS_DIR="$PVM_HOME/shims"
 
 # Default mirror
 DEFAULT_MIRROR="https://www.python.org/ftp/python"
@@ -27,7 +28,6 @@ declare -A MIRRORS=(
     ["tsinghua"]="https://mirrors.tuna.tsinghua.edu.cn/python"
     ["qinghua"]="https://mirrors.tuna.tsinghua.edu.cn/python"
     ["huawei"]="https://mirrors.huaweicloud.com/python"
-    ["npmmirror"]="https://registry.npmmirror.com/-/binary/python"
     ["aliyun"]="https://mirrors.aliyun.com/python"
 )
 
@@ -37,7 +37,6 @@ declare -A PIP_MIRRORS=(
     ["tsinghua"]="https://pypi.tuna.tsinghua.edu.cn/simple"
     ["qinghua"]="https://pypi.tuna.tsinghua.edu.cn/simple"
     ["huawei"]="https://repo.huaweicloud.com/repository/pypi/simple"
-    ["npmmirror"]="https://registry.npmmirror.com/-/binary/pypi/simple"
     ["aliyun"]="https://mirrors.aliyun.com/pypi/simple"
 )
 
@@ -107,7 +106,6 @@ Commands:
 Mirror Presets:
     tsinghua, qinghua       Tsinghua University (China)
     huawei                  Huawei Cloud (China)
-    npmmirror               npmmirror (China)
     aliyun                  Aliyun (China)
     default                 python.org (Official)
 
@@ -119,6 +117,10 @@ Examples:
 
 Configuration:
     pvm stores data in: $PVM_HOME
+
+Uninstall pvm:
+    Run uninstall.sh from the pvm repository to remove pvm completely.
+    See: https://github.com/violet27chen/pym
 
 EOF
 }
@@ -292,6 +294,45 @@ pvm_check_dependencies() {
     return 0
 }
 
+# Resolve partial version to latest available version
+# e.g. "3.13" -> "3.13.1", "3" -> "3.13.1"
+pvm_resolve_available() {
+    local ver="$1"
+    # Already full version
+    if [[ "$ver" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+        echo "$ver"
+        return
+    fi
+    # Match from AVAILABLE_VERSIONS (already sorted descending)
+    for v in "${AVAILABLE_VERSIONS[@]}"; do
+        if [[ "$v" == "$ver"* || "$v" == "$ver."* ]]; then
+            echo -e "${GRAY}Resolved version: $ver -> $v${NC}" >&2
+            echo "$v"
+            return
+        fi
+    done
+}
+
+# Resolve partial version to latest installed version
+pvm_resolve_installed() {
+    local ver="$1"
+    if [[ "$ver" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+        echo "$ver"
+        return
+    fi
+    local installed
+    installed=$(pvm_get_installed)
+    if [[ -n "$installed" ]]; then
+        while IFS= read -r v; do
+            if [[ "$v" == "$ver"* || "$v" == "$ver."* ]]; then
+                echo -e "${GRAY}Resolved version: $ver -> $v${NC}" >&2
+                echo "$v"
+                return
+            fi
+        done <<< "$installed"
+    fi
+}
+
 # Install Python version
 pvm_install() {
     local version="$1"
@@ -299,14 +340,26 @@ pvm_install() {
     if [[ -z "$version" ]]; then
         echo -e "${RED}Error: Please specify a version to install.${NC}"
         echo "Usage: pvm install <version>"
-        echo "Example: pvm install 3.12.4"
+        echo "Example: pvm install 3.12.4  (or: pvm install 3.12)"
         return 1
     fi
     
-    # Validate version format
+    # Resolve partial version to full version
     if ! [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-        echo -e "${RED}Error: Invalid version format. Use format like '3.12.4'${NC}"
-        return 1
+        if [[ "$version" =~ ^[0-9]+(\.[0-9]+)?$ ]]; then
+            local resolved
+            resolved=$(pvm_resolve_available "$version")
+            if [[ -n "$resolved" ]]; then
+                version="$resolved"
+            else
+                echo -e "${RED}Error: No matching version found for '$version'${NC}"
+                echo "Use 'pvm list available' to see available versions."
+                return 1
+            fi
+        else
+            echo -e "${RED}Error: Invalid version format. Use format like '3.13', '3.13.2', or '3'${NC}"
+            return 1
+        fi
     fi
     
     local version_dir="$PVM_VERSIONS_DIR/$version"
@@ -393,6 +446,8 @@ pvm_install() {
     
     if ! ./configure $configure_opts > "$temp_dir/configure.log" 2>&1; then
         echo -e "${RED}Error: Configuration failed. Check $temp_dir/configure.log for details.${NC}"
+        cd - > /dev/null 2>&1
+        rm -rf "$temp_dir"
         return 1
     fi
     
@@ -405,6 +460,8 @@ pvm_install() {
     
     if ! make -j"$cpu_count" > "$temp_dir/make.log" 2>&1; then
         echo -e "${RED}Error: Build failed. Check $temp_dir/make.log for details.${NC}"
+        cd - > /dev/null 2>&1
+        rm -rf "$temp_dir"
         return 1
     fi
     
@@ -413,6 +470,8 @@ pvm_install() {
     echo -e "${YELLOW}[5/5] Installing to $version_dir...${NC}"
     if ! make install > "$temp_dir/install.log" 2>&1; then
         echo -e "${RED}Error: Installation failed. Check $temp_dir/install.log for details.${NC}"
+        cd - > /dev/null 2>&1
+        rm -rf "$temp_dir"
         return 1
     fi
     
@@ -441,6 +500,15 @@ pvm_uninstall() {
         echo -e "${RED}Error: Please specify a version to uninstall.${NC}"
         echo "Usage: pvm uninstall <version>"
         return 1
+    fi
+    
+    # Resolve partial version to installed version
+    if ! [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+        local resolved
+        resolved=$(pvm_resolve_installed "$version")
+        if [[ -n "$resolved" ]]; then
+            version="$resolved"
+        fi
     fi
     
     local version_dir="$PVM_VERSIONS_DIR/$version"
@@ -478,7 +546,7 @@ pvm_uninstall() {
     
     # Show remaining versions
     local remaining
-    remaining=$(pvm_list_installed)
+    remaining=$(pvm_get_installed)
     if [[ -n "$remaining" ]]; then
         echo "  Remaining installed versions:"
         echo "$remaining" | while read -r v; do
@@ -492,6 +560,45 @@ pvm_uninstall() {
     fi
 }
 
+# Create/update nvm-style shims for instant version switching
+pvm_update_shims() {
+    mkdir -p "$PVM_SHIMS_DIR"
+
+    # python3 shim
+    cat > "$PVM_SHIMS_DIR/python3" << 'SHIM'
+#!/usr/bin/env bash
+PVM_HOME="${PVM_HOME:-$HOME/.pvm}"
+PVM_CURRENT=$(cat "$PVM_HOME/current" 2>/dev/null | tr -d '[:space:]')
+if [[ -z "$PVM_CURRENT" ]]; then
+    echo "Error: No Python version active. Run: pvm use <version>" >&2
+    exit 1
+fi
+exec "$PVM_HOME/versions/$PVM_CURRENT/bin/python3" "$@"
+SHIM
+    chmod +x "$PVM_SHIMS_DIR/python3"
+
+    # python shim (same as python3)
+    cp "$PVM_SHIMS_DIR/python3" "$PVM_SHIMS_DIR/python"
+    chmod +x "$PVM_SHIMS_DIR/python"
+
+    # pip3 shim
+    cat > "$PVM_SHIMS_DIR/pip3" << 'SHIM'
+#!/usr/bin/env bash
+PVM_HOME="${PVM_HOME:-$HOME/.pvm}"
+PVM_CURRENT=$(cat "$PVM_HOME/current" 2>/dev/null | tr -d '[:space:]')
+if [[ -z "$PVM_CURRENT" ]]; then
+    echo "Error: No Python version active. Run: pvm use <version>" >&2
+    exit 1
+fi
+exec "$PVM_HOME/versions/$PVM_CURRENT/bin/pip3" "$@"
+SHIM
+    chmod +x "$PVM_SHIMS_DIR/pip3"
+
+    # pip shim (same as pip3)
+    cp "$PVM_SHIMS_DIR/pip3" "$PVM_SHIMS_DIR/pip"
+    chmod +x "$PVM_SHIMS_DIR/pip"
+}
+
 # Use Python version
 pvm_use() {
     local version="$1"
@@ -500,6 +607,15 @@ pvm_use() {
         echo -e "${RED}Error: Please specify a version to use.${NC}"
         echo "Usage: pvm use <version>"
         return 1
+    fi
+    
+    # Resolve partial version to installed version
+    if ! [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+        local resolved
+        resolved=$(pvm_resolve_installed "$version")
+        if [[ -n "$resolved" ]]; then
+            version="$resolved"
+        fi
     fi
     
     local version_dir="$PVM_VERSIONS_DIR/$version"
@@ -516,6 +632,9 @@ pvm_use() {
     # Update symlink
     rm -f "$PVM_SYMLINK"
     ln -sf "$version_dir" "$PVM_SYMLINK"
+    
+    # Create/update nvm-style shims for instant version switching
+    pvm_update_shims
     
     echo ""
     echo -e "${GREEN}=============================================${NC}"
@@ -543,11 +662,11 @@ pvm_use() {
     fi
     
     # Check if pvm python is in PATH
-    if [[ ":$PATH:" != *":$PVM_SYMLINK/bin:"* ]]; then
+    if [[ ":$PATH:" != *":$PVM_SYMLINK/bin:"* ]] && [[ ":$PATH:" != *":$PVM_SHIMS_DIR:"* ]]; then
         echo ""
         echo -e "${YELLOW}  Warning: pvm Python path not in PATH${NC}"
         echo -e "${YELLOW}  Add this to your shell profile:${NC}"
-        echo -e "${CYAN}    export PATH=\"$PVM_SYMLINK/bin:\$PATH\"${NC}"
+        echo -e "${CYAN}    export PATH=\"$PVM_SYMLINK/bin:$PVM_SHIMS_DIR:\$PATH\"${NC}"
     fi
     echo ""
 }
@@ -643,7 +762,6 @@ pvm_config() {
         echo -e "${YELLOW}Available presets:${NC}"
         echo "  tsinghua, qinghua   - Tsinghua University (https://mirrors.tuna.tsinghua.edu.cn/python)"
         echo "  huawei              - Huawei Cloud (https://mirrors.huaweicloud.com/python)"
-        echo "  npmmirror           - npmmirror (https://registry.npmmirror.com/-/binary/python)"
         echo "  aliyun              - Aliyun (https://mirrors.aliyun.com/python)"
         echo "  default             - python.org (https://www.python.org/ftp/python)"
         echo ""
@@ -711,7 +829,6 @@ pvm_show_config() {
     echo -e "${YELLOW}Available presets (configures both Python and pip):${NC}"
     echo "  pvm config tsinghua   - Tsinghua University"
     echo "  pvm config huawei     - Huawei Cloud"
-    echo "  pvm config npmmirror  - npmmirror"
     echo "  pvm config aliyun     - Aliyun"
     echo "  pvm config default    - python.org / pypi.org (Official)"
     echo ""

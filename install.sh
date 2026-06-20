@@ -4,24 +4,58 @@
 # Installs pvm (Python Version Manager) on Unix systems.
 #
 # Usage:
-#   curl -o- https://raw.githubusercontent.com/violettoolssite/pym/main/install.sh | bash
+#   curl -o- https://raw.githubusercontent.com/violet27chen/pym/main/install.sh | bash
 #   
 #   Or with wget:
-#   wget -qO- https://raw.githubusercontent.com/violettoolssite/pym/main/install.sh | bash
+#   wget -qO- https://raw.githubusercontent.com/violet27chen/pym/main/install.sh | bash
+#
+#   Or via jsDelivr CDN (faster in some regions):
+#   curl -fsSL https://cdn.jsdelivr.net/gh/violet27chen/pym@main/install.sh | bash
+#
+#   Force CDN mode (prioritize jsDelivr for all downloads):
+#   PVM_CDN=1 curl -fsSL https://cdn.jsdelivr.net/gh/violet27chen/pym@main/install.sh | bash
 
 set -e
 
 # Configuration
 PVM_HOME="${PVM_HOME:-$HOME/.pvm}"
-PVM_REPO="https://github.com/violettoolssite/pym.git"
-PVM_RAW_BASE="https://raw.githubusercontent.com/violettoolssite/pym/main"
+PVM_REPO="https://github.com/violet27chen/pym.git"
+PVM_RAW_BASE="https://raw.githubusercontent.com/violet27chen/pym/main"
+PVM_CDN_BASE="https://cdn.jsdelivr.net/gh/violet27chen/pym@main"
 
 # Colors
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 CYAN='\033[0;36m'
+WHITE='\033[1;37m'
+GRAY='\033[0;37m'
 NC='\033[0m' # No Color
+
+# Determine download source priority
+# CDN mode: env var, --cdn argument, or auto-detect (piped via curl -> prioritize CDN)
+USE_CDN="${PVM_CDN:-0}"
+for arg in "$@"; do
+    if [[ "$arg" == "--cdn" ]]; then
+        USE_CDN=1
+    fi
+done
+# Auto-detect: when piped (no real script file), default to CDN priority
+if [[ "$USE_CDN" != "1" ]] && [[ -z "${BASH_SOURCE[0]}" || "${BASH_SOURCE[0]}" == "/dev/stdin" || "${BASH_SOURCE[0]}" == "bash" ]]; then
+    USE_CDN=1
+fi
+
+if [[ "$USE_CDN" == "1" ]]; then
+    DOWNLOAD_PRIMARY="$PVM_CDN_BASE"
+    PRIMARY_NAME="jsDelivr CDN"
+    DOWNLOAD_FALLBACK="$PVM_RAW_BASE"
+    FALLBACK_NAME="GitHub"
+else
+    DOWNLOAD_PRIMARY="$PVM_RAW_BASE"
+    PRIMARY_NAME="GitHub"
+    DOWNLOAD_FALLBACK="$PVM_CDN_BASE"
+    FALLBACK_NAME="jsDelivr CDN"
+fi
 
 # Detect shell
 detect_shell() {
@@ -209,6 +243,9 @@ install_pvm() {
     print_color "$CYAN" "=================================="
     print_color "$CYAN" ""
 
+    echo -e "  ${GRAY}Download source: $PRIMARY_NAME (fallback: $FALLBACK_NAME)${NC}"
+    echo ""
+
     # Install dependencies first
     install_dependencies
     echo ""
@@ -222,20 +259,39 @@ install_pvm() {
 
     # Download pvm script
     print_color "$YELLOW" "Downloading pvm scripts..."
+    echo -e "  ${GRAY}Source: $PRIMARY_NAME (fallback: $FALLBACK_NAME)${NC}"
     
     local pvm_script="$PVM_HOME/unix/pvm.sh"
+    local downloaded=false
     
-    if ! download_file "$PVM_RAW_BASE/unix/pvm.sh" "$pvm_script" 2>/dev/null; then
-        print_color "$YELLOW" "Could not download from GitHub, checking for local files..."
+    # Try primary source first
+    echo -e "  ${GRAY}Trying $PRIMARY_NAME...${NC}"
+    if download_file "$DOWNLOAD_PRIMARY/unix/pvm.sh" "$pvm_script" 2>/dev/null; then
+        echo -e "  ${GREEN}Downloaded from $PRIMARY_NAME.${NC}"
+        downloaded=true
+    fi
+    
+    # Try fallback source
+    if [[ "$downloaded" != true ]]; then
+        echo -e "  ${GRAY}Trying $FALLBACK_NAME...${NC}"
+        if download_file "$DOWNLOAD_FALLBACK/unix/pvm.sh" "$pvm_script" 2>/dev/null; then
+            echo -e "  ${GREEN}Downloaded from $FALLBACK_NAME.${NC}"
+            downloaded=true
+        fi
+    fi
+    
+    # Fall back to local files
+    if [[ "$downloaded" != true ]]; then
+        print_color "$YELLOW" "Remote download failed. Trying local files..."
         
-        # If running from cloned repo
         local script_dir
         script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
         
         if [[ -f "$script_dir/unix/pvm.sh" ]]; then
             cp "$script_dir/unix/pvm.sh" "$pvm_script"
+            echo -e "  ${GREEN}Local files copied.${NC}"
         else
-            print_color "$RED" "Error: Failed to download pvm script."
+            print_color "$RED" "Error: Failed to download pvm script and no local files found."
             exit 1
         fi
     fi
@@ -262,7 +318,7 @@ install_pvm() {
 # pvm - Python Version Manager
 export PVM_HOME="$HOME/.pvm"
 [ -s "$PVM_HOME/pvm.sh" ] && source "$PVM_HOME/pvm.sh"
-export PATH="$PVM_HOME/python/bin:$PATH"
+export PATH="$PVM_HOME/python/bin:$PVM_HOME/shims:$PATH"
 '
 
     # Check if already configured
@@ -299,7 +355,6 @@ export PATH="$PVM_HOME/python/bin:$PATH"
     echo "  2. Configure mirror (China users recommended):"
     print_color "$CYAN" "     pvm config tsinghua    # Tsinghua mirror"
     print_color "$CYAN" "     pvm config huawei      # Huawei Cloud mirror"
-    print_color "$CYAN" "     pvm config npmmirror   # npmmirror"
     echo ""
     echo "  3. Install Python:"
     print_color "$CYAN" "     pvm install 3.12.4"
@@ -324,6 +379,8 @@ export PATH="$PVM_HOME/python/bin:$PATH"
     echo "  pvm config [mirror]   - Configure download mirror"
     echo "  pvm arch              - Show system architecture"
     echo "  pvm --help            - Show help"
+    echo ""
+    echo -e "  ${GRAY}To uninstall pvm:     bash uninstall.sh${NC}"
     echo ""
 
     print_color "$GREEN" "Build dependencies have been automatically installed."

@@ -6,20 +6,45 @@
     Downloads and sets up pvm in the user's home directory.
 .NOTES
     Run this script in PowerShell with administrator privileges for best results.
-    Usage: irm https://raw.githubusercontent.com/violettoolssite/pym/main/install.ps1 | iex
+    Usage: irm https://raw.githubusercontent.com/violet27chen/pym/main/install.ps1 | iex
+    CDN:   $env:PVM_CDN=1; irm https://cdn.jsdelivr.net/gh/violet27chen/pym@main/install.ps1 | iex
 #>
 
 [CmdletBinding()]
 param(
     [Parameter()]
-    [string]$InstallDir = (Join-Path $env:USERPROFILE ".pvm")
+    [string]$InstallDir = (Join-Path $env:USERPROFILE ".pvm"),
+    [Parameter()]
+    [switch]$CDN
 )
 
 $ErrorActionPreference = "Stop"
 
 # Configuration
-$PVM_REPO = "https://github.com/violettoolssite/pym.git"
-$PVM_RAW_BASE = "https://raw.githubusercontent.com/violettoolssite/pym/main"
+$PVM_REPO = "https://github.com/violet27chen/pym.git"
+$PVM_RAW_BASE = "https://raw.githubusercontent.com/violet27chen/pym/main"
+$PVM_CDN_BASE = "https://cdn.jsdelivr.net/gh/violet27chen/pym@main"
+
+# Determine download source priority
+# CDN mode: env var, parameter, or auto-detect (when piped via iex -> prioritize CDN)
+$useCdn = $CDN -or ($env:PVM_CDN -eq '1')
+if (-not $useCdn -and -not $MyInvocation.MyCommand.Path) {
+    # Script is being piped via iex, default to CDN priority
+    $useCdn = $true
+}
+
+if ($useCdn) {
+    $downloadSources = @(
+        @{ Name = "jsDelivr CDN"; Base = $PVM_CDN_BASE },
+        @{ Name = "GitHub"; Base = $PVM_RAW_BASE }
+    )
+}
+else {
+    $downloadSources = @(
+        @{ Name = "GitHub"; Base = $PVM_RAW_BASE },
+        @{ Name = "jsDelivr CDN"; Base = $PVM_CDN_BASE }
+    )
+}
 
 function Write-ColorOutput {
     param(
@@ -39,6 +64,10 @@ function Install-Pvm {
     Write-ColorOutput "  pvm - Python Version Manager" "Cyan"
     Write-ColorOutput "  Windows Installer" "Cyan"
     Write-ColorOutput "==================================`n" "Cyan"
+
+    # Show download source priority
+    $primarySource = $downloadSources[0].Name
+    Write-ColorOutput "Download source: $primarySource (fallback: $($downloadSources[1].Name))" "DarkGray"
 
     # Create installation directory
     Write-ColorOutput "Installing pvm to: $InstallDir" "Yellow"
@@ -61,30 +90,50 @@ function Install-Pvm {
         New-Item -ItemType Directory -Path $windowsDir -Force | Out-Null
     }
 
-    try {
-        # Download main PowerShell script
-        $ps1Content = (Invoke-WebRequest -Uri "$PVM_RAW_BASE/windows/pvm.ps1" -UseBasicParsing).Content
-        Set-Content -Path (Join-Path $windowsDir "pvm.ps1") -Value $ps1Content -Encoding UTF8
+    $downloaded = $false
 
-        # Download batch wrapper (must be ASCII, not UTF-8)
-        $cmdContent = (Invoke-WebRequest -Uri "$PVM_RAW_BASE/windows/pvm.cmd" -UseBasicParsing).Content
-        [System.IO.File]::WriteAllBytes((Join-Path $windowsDir "pvm.cmd"), [System.Text.Encoding]::ASCII.GetBytes($cmdContent))
+    foreach ($source in $downloadSources) {
+        if ($downloaded) { break }
+        try {
+            Write-ColorOutput "  Trying $($source.Name)..." "DarkGray"
+            $ps1Content = (Invoke-WebRequest -Uri "$($source.Base)/windows/pvm.ps1" -UseBasicParsing).Content
+            Set-Content -Path (Join-Path $windowsDir "pvm.ps1") -Value $ps1Content -Encoding UTF8
 
-        # Download elevate script (must be ASCII, not UTF-8)
-        $elevateContent = (Invoke-WebRequest -Uri "$PVM_RAW_BASE/windows/elevate.cmd" -UseBasicParsing).Content
-        [System.IO.File]::WriteAllBytes((Join-Path $windowsDir "elevate.cmd"), [System.Text.Encoding]::ASCII.GetBytes($elevateContent))
+            $cmdContent = (Invoke-WebRequest -Uri "$($source.Base)/windows/pvm.cmd" -UseBasicParsing).Content
+            [System.IO.File]::WriteAllBytes((Join-Path $windowsDir "pvm.cmd"), [System.Text.Encoding]::ASCII.GetBytes($cmdContent))
+
+            $elevateContent = (Invoke-WebRequest -Uri "$($source.Base)/windows/elevate.cmd" -UseBasicParsing).Content
+            [System.IO.File]::WriteAllBytes((Join-Path $windowsDir "elevate.cmd"), [System.Text.Encoding]::ASCII.GetBytes($elevateContent))
+
+            Write-ColorOutput "  Downloaded from $($source.Name)." "Green"
+            $downloaded = $true
+        }
+        catch {
+            Write-ColorOutput "  $($source.Name) failed: $($_.Exception.Message)" "DarkGray"
+        }
     }
-    catch {
-        Write-ColorOutput "Error downloading pvm scripts: $_" "Red"
-        Write-ColorOutput "Trying to download from local files..." "Yellow"
+
+    if (-not $downloaded) {
+        Write-ColorOutput "Remote download failed. Trying local files..." "Yellow"
         
         # If running from cloned repo, copy local files
-        $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
-        if (Test-Path (Join-Path $scriptDir "windows/pvm.ps1")) {
-            Copy-Item -Path (Join-Path $scriptDir "windows/*") -Destination $windowsDir -Force
+        $scriptDir = $null
+        if ($PSScriptRoot) {
+            $scriptDir = $PSScriptRoot
+        }
+        elseif ($MyInvocation.MyCommand.Path) {
+            $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
+        }
+        elseif (Test-Path ".\windows\pvm.ps1") {
+            $scriptDir = (Get-Location).Path
+        }
+        
+        if ($scriptDir -and (Test-Path (Join-Path $scriptDir "windows\pvm.ps1"))) {
+            Copy-Item -Path (Join-Path $scriptDir "windows\*") -Destination $windowsDir -Force
+            Write-ColorOutput "Local files copied successfully." "Green"
         }
         else {
-            throw "Failed to download pvm scripts and no local files found."
+            throw "Failed to download pvm scripts and no local files found. Please run install.ps1 from the pvm repository directory."
         }
     }
 
@@ -112,8 +161,9 @@ function Install-Pvm {
     $pvmPath = $InstallDir
     $pvmPythonPath = Join-Path $InstallDir "python"
     $pvmPythonScriptsPath = Join-Path $pvmPythonPath "Scripts"
+    $pvmShimsPath = Join-Path $InstallDir "shims"
 
-    $pathsToAdd = @($pvmPath, $pvmPythonPath, $pvmPythonScriptsPath)
+    $pathsToAdd = @($pvmPath, $pvmShimsPath, $pvmPythonPath, $pvmPythonScriptsPath)
     $pathModified = $false
 
     foreach ($pathToAdd in $pathsToAdd) {
@@ -126,6 +176,8 @@ function Install-Pvm {
     if ($pathModified) {
         try {
             [Environment]::SetEnvironmentVariable("PATH", $userPath, "User")
+            # Refresh current session PATH so pvm works immediately
+            $env:Path = $userPath + ';' + $env:Path
             Write-ColorOutput "PATH updated successfully." "Green"
         }
         catch {
@@ -137,6 +189,11 @@ function Install-Pvm {
         }
     }
     else {
+        # Even if not modified, ensure current session has the paths
+        $currentUserPath = [Environment]::GetEnvironmentVariable("PATH", "User")
+        if ($currentUserPath) {
+            $env:Path = $currentUserPath + ';' + $env:Path
+        }
         Write-ColorOutput "PATH already configured." "Green"
     }
 
@@ -169,7 +226,6 @@ function Install-Pvm {
     Write-ColorOutput "  2. Configure mirror (China users recommended):" "White"
     Write-ColorOutput "     pvm config tsinghua    # Tsinghua mirror" "Cyan"
     Write-ColorOutput "     pvm config huawei      # Huawei Cloud mirror" "Cyan"
-    Write-ColorOutput "     pvm config npmmirror   # npmmirror" "Cyan"
     Write-ColorOutput ""
     Write-ColorOutput "  3. Install Python:" "White"
     Write-ColorOutput "     pvm install 3.12.4" "Cyan"
@@ -194,6 +250,8 @@ function Install-Pvm {
     Write-ColorOutput "  pvm config [mirror]   - Configure download mirror" "White"
     Write-ColorOutput "  pvm arch              - Show system architecture" "White"
     Write-ColorOutput "  pvm --help            - Show help" "White"
+    Write-ColorOutput ""
+    Write-ColorOutput "  To uninstall pvm:     powershell -ExecutionPolicy Bypass -File uninstall.ps1" "DarkGray"
     Write-ColorOutput ""
 
     Write-ColorOutput "Installation path: $InstallDir" "Green"
