@@ -1,0 +1,48 @@
+name: Update Python Versions
+
+on:
+  schedule:
+    # Run daily at 06:00 UTC
+    - cron: '0 6 * * *'
+  workflow_dispatch: # Allow manual trigger
+
+jobs:
+  update-versions:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Fetch Python versions from python.org
+        run: |
+          # Fetch all published stable releases
+          RESPONSE=$(curl -sf "https://www.python.org/api/v2/downloads/release/?is_published=true&pre_release=false")
+
+          # Extract version numbers (format: "Python 3.14.6")
+          VERSIONS=$(echo "$RESPONSE" | grep -oP '"name"\s*:\s*"Python \K[0-9]+\.[0-9]+\.[0-9]+' | head -200)
+
+          # Build JSON array
+          JSON_ARRAY=$(echo "$VERSIONS" | awk 'BEGIN{printf "["} NR>1{printf ", "} {printf "\"%s\"", $0} END{printf "]"}')
+
+          # Get current date
+          TODAY=$(date -u +%Y-%m-%d)
+
+          # Write versions.json
+          cat > versions.json << EOF
+          {
+            "_comment": "Auto-updated by GitHub Actions daily from python.org. Do not edit manually.",
+            "_source": "https://www.python.org/api/v2/downloads/release/?is_published=true&pre_release=false",
+            "_updated": "$TODAY",
+            "versions": $JSON_ARRAY
+          }
+          EOF
+
+          echo "Updated versions.json with $(echo "$VERSIONS" | wc -l) versions"
+
+      - name: Commit changes
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add versions.json
+          git diff --cached --quiet || git commit -m "chore: update versions.json [skip ci]"
+          git push

@@ -60,6 +60,7 @@ PVM_CURRENT_FILE="$PVM_HOME/current"
 PVM_SETTINGS_FILE="$PVM_HOME/settings.json"
 PVM_SYMLINK="$PVM_HOME/python"
 PVM_SHIMS_DIR="$PVM_HOME/shims"
+PVM_VENVS_DIR="$PVM_HOME/venvs"
 
 # Default mirror
 DEFAULT_MIRROR="https://www.python.org/ftp/python"
@@ -90,21 +91,85 @@ CYAN='\033[0;36m'
 GRAY='\033[0;90m'
 NC='\033[0m' # No Color
 
-# Available Python versions
-AVAILABLE_VERSIONS=(
-    "3.13.1" "3.13.0"
-    "3.12.8" "3.12.7" "3.12.6" "3.12.5" "3.12.4" "3.12.3" "3.12.2" "3.12.1" "3.12.0"
-    "3.11.11" "3.11.10" "3.11.9" "3.11.8" "3.11.7" "3.11.6" "3.11.5" "3.11.4" "3.11.3" "3.11.2" "3.11.1" "3.11.0"
-    "3.10.16" "3.10.15" "3.10.14" "3.10.13" "3.10.12" "3.10.11" "3.10.10" "3.10.9" "3.10.8" "3.10.7" "3.10.6" "3.10.5" "3.10.4" "3.10.3" "3.10.2" "3.10.1" "3.10.0"
-    "3.9.21" "3.9.20" "3.9.19" "3.9.18" "3.9.17" "3.9.16" "3.9.15" "3.9.14" "3.9.13" "3.9.12" "3.9.11" "3.9.10" "3.9.9" "3.9.8" "3.9.7" "3.9.6" "3.9.5" "3.9.4" "3.9.3" "3.9.2" "3.9.1" "3.9.0"
-    "3.8.20" "3.8.19" "3.8.18" "3.8.17" "3.8.16" "3.8.15" "3.8.14" "3.8.13" "3.8.12" "3.8.11" "3.8.10" "3.8.9" "3.8.8" "3.8.7" "3.8.6" "3.8.5" "3.8.4" "3.8.3" "3.8.2" "3.8.1" "3.8.0"
+# Fallback Python versions (used when network is unavailable)
+FALLBACK_VERSIONS=(
+    "3.14.6" "3.14.5" "3.14.4" "3.14.3" "3.14.2" "3.14.1" "3.14.0"
+    "3.13.14" "3.13.13" "3.13.12" "3.13.11" "3.13.10" "3.13.9" "3.13.8" "3.13.7" "3.13.6" "3.13.5" "3.13.4" "3.13.3" "3.13.2" "3.13.1" "3.13.0"
+    "3.12.9" "3.12.8" "3.12.7" "3.12.6" "3.12.5" "3.12.4" "3.12.3" "3.12.2" "3.12.1" "3.12.0"
+    "3.11.12" "3.11.11" "3.11.10" "3.11.9" "3.11.8" "3.11.7" "3.11.6" "3.11.5" "3.11.4" "3.11.3" "3.11.2" "3.11.1" "3.11.0"
+    "3.10.17" "3.10.16" "3.10.15" "3.10.14" "3.10.13" "3.10.12" "3.10.11" "3.10.10" "3.10.9" "3.10.8" "3.10.7" "3.10.6" "3.10.5" "3.10.4" "3.10.3" "3.10.2" "3.10.1" "3.10.0"
+    "3.9.22" "3.9.21" "3.9.20" "3.9.19" "3.9.18" "3.9.17" "3.9.16" "3.9.15" "3.9.14" "3.9.13" "3.9.12" "3.9.11" "3.9.10" "3.9.9" "3.9.8" "3.9.7" "3.9.6" "3.9.5" "3.9.4" "3.9.3" "3.9.2" "3.9.1" "3.9.0"
+    "3.8.21" "3.8.20" "3.8.19" "3.8.18" "3.8.17" "3.8.16" "3.8.15" "3.8.14" "3.8.13" "3.8.12" "3.8.11" "3.8.10" "3.8.9" "3.8.8" "3.8.7" "3.8.6" "3.8.5" "3.8.4" "3.8.3" "3.8.2" "3.8.1" "3.8.0"
 )
+AVAILABLE_VERSIONS=()
+
+# Fetch available versions from CDN/API with caching
+pvm_fetch_versions() {
+    local cache_file="$PVM_HOME/versions_cache.json"
+
+    # Return cached if already loaded
+    if [[ ${#AVAILABLE_VERSIONS[@]} -gt 0 ]]; then
+        return
+    fi
+
+    # 1. Try local cache (< 24h)
+    if [[ -f "$cache_file" ]]; then
+        local cache_age
+        cache_age=$(( $(date +%s) - $(stat -c %Y "$cache_file" 2>/dev/null || stat -f %m "$cache_file" 2>/dev/null || echo 0) ))
+        if [[ $cache_age -lt 86400 ]]; then
+            while IFS= read -r ver; do
+                AVAILABLE_VERSIONS+=("$ver")
+            done < <(grep -oP '"versions"\s*:\s*\[[\s\S]*?\]' "$cache_file" 2>/dev/null | grep -oP '"[0-9]+\.[0-9]+\.[0-9]+"' | tr -d '"')
+            if [[ ${#AVAILABLE_VERSIONS[@]} -gt 0 ]]; then
+                return
+            fi
+        fi
+    fi
+
+    # 2. Try jsDelivr CDN (global, fast)
+    echo -e "  ${GRAY}Fetching versions from CDN...${NC}" >&2
+    local cdn_urls=(
+        "https://cdn.jsdelivr.net/gh/violet27chen/pym@main/versions.json"
+        "https://raw.githubusercontent.com/violet27chen/pym/main/versions.json"
+    )
+    for url in "${cdn_urls[@]}"; do
+        local response
+        if response=$(curl -sf --connect-timeout 10 --max-time 15 "$url" 2>/dev/null); then
+            while IFS= read -r ver; do
+                AVAILABLE_VERSIONS+=("$ver")
+            done < <(echo "$response" | grep -oP '"[0-9]+\.[0-9]+\.[0-9]+"' | tr -d '"')
+            if [[ ${#AVAILABLE_VERSIONS[@]} -gt 0 ]]; then
+                echo "$response" > "$cache_file" 2>/dev/null || true
+                return
+            fi
+        fi
+    done
+
+    # 3. Try python.org API
+    echo -e "  ${GRAY}Trying python.org API...${NC}" >&2
+    local api_response
+    if api_response=$(curl -sf --connect-timeout 10 --max-time 15 \
+        "https://www.python.org/api/v2/downloads/release/?is_published=true&pre_release=false" 2>/dev/null); then
+        while IFS= read -r ver; do
+            AVAILABLE_VERSIONS+=("$ver")
+        done < <(echo "$api_response" | grep -oP '"name"\s*:\s*"Python \K[0-9]+\.[0-9]+\.[0-9]+' | head -200)
+        if [[ ${#AVAILABLE_VERSIONS[@]} -gt 0 ]]; then
+            printf '{"versions":[%s]}\n' "$(printf '"%s",' "${AVAILABLE_VERSIONS[@]}" | sed 's/,$//')" > "$cache_file" 2>/dev/null || true
+            return
+        fi
+    fi
+
+    # 4. Fallback to built-in list
+    echo -e "  ${YELLOW}Using built-in version list.${NC}" >&2
+    AVAILABLE_VERSIONS=("${FALLBACK_VERSIONS[@]}")
+}
 
 # Initialize pvm directories
 pvm_init() {
     mkdir -p "$PVM_HOME"
     mkdir -p "$PVM_VERSIONS_DIR"
-    
+    mkdir -p "$PVM_VENVS_DIR"
+
     if [[ ! -f "$PVM_SETTINGS_FILE" ]]; then
         echo '{"mirror": "'"$DEFAULT_MIRROR"'"}' > "$PVM_SETTINGS_FILE"
     fi
@@ -142,11 +207,28 @@ Commands:
     which                   Show the path to the current Python executable
     config [mirror]         Configure mirror (show current if no argument)
     arch                    Show detected system architecture
+
+    venv <name>             Create a virtual environment
+    venv list               List all virtual environments
+    venv remove <name>      Remove a virtual environment
+    venv activate <name>    Show activation command
+
+    pip install <pkg>       Install a package
+    pip uninstall <pkg>     Uninstall a package
+    pip list                List installed packages
+    pip upgrade <pkg>       Upgrade a package
+
+    init                    Initialize a new project (pyproject.toml)
+    add <pkg>               Add a dependency
+    remove <pkg>            Remove a dependency
+    run <cmd>               Run a command in project venv
+
     --help, -h              Show this help message
     --version, -v           Show pvm version
 
 Options:
-    --home <path>           Set pvm data directory (overrides PVM_HOME env var)
+    --home <path>           Set pvm data directory for this command only (auto-creates if needed)
+    --source                Force build from source (skip prebuilt binary)
 
 Mirror Presets:
     tsinghua, qinghua       Tsinghua University (China)
@@ -157,8 +239,10 @@ Mirror Presets:
 Examples:
     pvm install 3.12.4           Install Python 3.12.4
     pvm use 3.12.4               Switch to Python 3.12.4
+    pvm venv myenv               Create a virtual environment
+    pvm pip install requests     Install a package
+    pvm init                     Initialize a project
     pvm config tsinghua          Use Tsinghua mirror
-    pvm config huawei            Use Huawei Cloud mirror
 
 Configuration:
     pvm stores data in: $PVM_HOME
@@ -193,64 +277,97 @@ pvm_list() {
     local installed current
     installed=$(pvm_get_installed)
     current=$(pvm_get_current)
-    
+    local count
+    count=$(echo "$installed" | grep -c '.' 2>/dev/null || echo 0)
+
     if [[ -z "$installed" ]]; then
-        echo -e "${YELLOW}No Python versions installed.${NC}"
-        echo "Use 'pvm install <version>' to install a version."
-        echo "Use 'pvm list available' to see available versions."
+        echo ""
+        echo -e "  ${YELLOW}No Python versions installed.${NC}"
+        echo ""
+        echo "  Install one:"
+        echo -e "    ${CYAN}pvm install 3.13         # latest 3.13.x${NC}"
+        echo -e "    ${CYAN}pvm install 3.12.4       # specific version${NC}"
+        echo -e "    ${CYAN}pvm list available       # see all options${NC}"
+        echo ""
         return
     fi
-    
-    echo -e "\n${CYAN}Installed Python versions:${NC}"
+
     echo ""
-    
+    echo -e "  ${CYAN}Installed Python versions ($count):${NC}"
+    echo ""
+
     while IFS= read -r v; do
         if [[ "$v" == "$current" ]]; then
-            echo -e "  ${GREEN}* $v (current)${NC}"
+            echo -e "    ${GREEN}* $v${NC} ${GRAY}(current)${NC}"
         else
-            echo "    $v"
+            echo -e "    ${WHITE}$v${NC}"
         fi
     done <<< "$installed"
+    echo ""
+    echo -e "  ${GRAY}Use 'pvm list available' to see downloadable versions.${NC}"
     echo ""
 }
 
 # List available versions
 pvm_list_available() {
-    local installed
+    pvm_fetch_versions
+    local installed current
     installed=$(pvm_get_installed)
-    
-    echo -e "\n${CYAN}Available Python versions:${NC}"
+    current=$(pvm_get_current)
+    local installed_count
+    installed_count=$(echo "$installed" | grep -c '.' 2>/dev/null || echo 0)
+    local available_count=${#AVAILABLE_VERSIONS[@]}
+
     echo ""
-    
+    echo -e "  ${CYAN}Available Python versions ($available_count total, $installed_count installed):${NC}"
+    echo ""
+
     local prev_minor=""
     local line=""
-    
+    local installed_in_group=0
+
     for v in "${AVAILABLE_VERSIONS[@]}"; do
         local minor
         minor=$(echo "$v" | cut -d. -f1-2)
-        
+
         if [[ "$minor" != "$prev_minor" ]]; then
             if [[ -n "$line" ]]; then
+                local group_info=""
+                if [[ $installed_in_group -gt 0 ]]; then
+                    group_info=" ${GRAY}($installed_in_group installed)${NC}"
+                fi
+                echo -e "  ${YELLOW}${prev_minor}.x${group_info}"
                 echo "$line"
             fi
-            echo -e "  ${YELLOW}${minor}.x:${NC}"
             line="    "
             prev_minor="$minor"
+            installed_in_group=0
         fi
-        
+
         if echo "$installed" | grep -q "^${v}$"; then
-            line+="[$v] "
+            if [[ "$v" == "$current" ]]; then
+                line+="*${v}* "
+            else
+                line+="[${v}] "
+            fi
+            installed_in_group=$((installed_in_group + 1))
         else
             line+="$v "
         fi
     done
-    
+
+    # Print last group
     if [[ -n "$line" ]]; then
+        local group_info=""
+        if [[ $installed_in_group -gt 0 ]]; then
+            group_info=" ${GRAY}($installed_in_group installed)${NC}"
+        fi
+        echo -e "  ${YELLOW}${prev_minor}.x${group_info}"
         echo "$line"
     fi
-    
+
     echo ""
-    echo -e "  ${GRAY}[version] = already installed${NC}"
+    echo -e "  ${GRAY}*version* = current    [version] = installed    plain = not installed${NC}"
     echo ""
 }
 
@@ -339,8 +456,9 @@ pvm_check_dependencies() {
 }
 
 # Resolve partial version to latest available version
-# e.g. "3.13" -> "3.13.1", "3" -> "3.13.1"
+# e.g. "3.13" -> "3.13.14", "3" -> "3.14.6"
 pvm_resolve_available() {
+    pvm_fetch_versions
     local ver="$1"
     # Already full version
     if [[ "$ver" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
@@ -380,14 +498,22 @@ pvm_resolve_installed() {
 # Install Python version
 pvm_install() {
     local version="$1"
-    
+    local use_source=false
+
     if [[ -z "$version" ]]; then
         echo -e "${RED}Error: Please specify a version to install.${NC}"
         echo "Usage: pvm install <version>"
         echo "Example: pvm install 3.12.4  (or: pvm install 3.12)"
         return 1
     fi
-    
+
+    # Check for --source flag
+    for arg in "$@"; do
+        if [[ "$arg" == "--source" ]]; then
+            use_source=true
+        fi
+    done
+
     # Resolve partial version to full version
     if ! [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
         if [[ "$version" =~ ^[0-9]+(\.[0-9]+)?$ ]]; then
@@ -405,124 +531,166 @@ pvm_install() {
             return 1
         fi
     fi
-    
+
     local version_dir="$PVM_VERSIONS_DIR/$version"
-    
+
     # Check if already installed
     if [[ -d "$version_dir" ]]; then
         echo -e "${YELLOW}Python $version is already installed.${NC}"
         echo "Use 'pvm use $version' to switch to it."
         return 0
     fi
-    
-    local mirror
-    mirror=$(pvm_get_mirror)
-    
-    # Try to use python-build-standalone for prebuilt binaries
+
     local platform
     platform=$(pvm_detect_platform) || return 1
-    
+
     echo ""
     echo -e "${CYAN}=============================================${NC}"
     echo -e "${CYAN}  Installing Python $version${NC}"
     echo -e "${CYAN}=============================================${NC}"
     echo ""
-    echo -e "  Mirror:     $mirror"
     echo -e "  Platform:   $platform"
     echo -e "  Install to: $version_dir"
     echo ""
-    
-    # Download source and build
+
+    # --- Try precompiled binary from python-build-standalone ---
+    if [[ "$use_source" != true ]]; then
+        echo -e "${YELLOW}[1/3] Downloading prebuilt Python $version...${NC}"
+
+        # Get latest release tag
+        local pbs_tag
+        pbs_tag=$(curl -sf --connect-timeout 10 --max-time 15 \
+            "https://api.github.com/repos/astral-sh/python-build-standalone/releases/latest" 2>/dev/null \
+            | grep -oP '"tag_name"\s*:\s*"\K[0-9]+' | head -1)
+
+        if [[ -n "$pbs_tag" ]]; then
+            # Map platform
+            local pbs_platform
+            case "$platform" in
+                linux-x86_64)    pbs_platform="x86_64-unknown-linux-gnu" ;;
+                linux-aarch64)   pbs_platform="aarch64-unknown-linux-gnu" ;;
+                macos-x86_64)    pbs_platform="x86_64-apple-darwin" ;;
+                macos-aarch64)   pbs_platform="aarch64-apple-darwin" ;;
+                *)               pbs_platform="" ;;
+            esac
+
+            if [[ -n "$pbs_platform" ]]; then
+                local tar_name="cpython-${version}+${pbs_tag}-${pbs_platform}-install_only.tar.gz"
+                local download_url="https://github.com/astral-sh/python-build-standalone/releases/download/${pbs_tag}/${tar_name}"
+                local temp_dir
+                temp_dir=$(mktemp -d)
+                local tar_file="$temp_dir/$tar_name"
+
+                echo -e "${GRAY}      URL: $download_url${NC}"
+
+                if curl -fSL --connect-timeout 10 --max-time 300 "$download_url" -o "$tar_file" 2>/dev/null; then
+                    echo -e "${GREEN}      Download complete!${NC}"
+
+                    echo -e "${YELLOW}[2/3] Extracting...${NC}"
+                    mkdir -p "$version_dir"
+                    if tar -xzf "$tar_file" -C "$version_dir" --strip-components=1 2>/dev/null; then
+                        echo -e "${GREEN}      Extraction complete!${NC}"
+
+                        # Ensure pip is available
+                        echo -e "${YELLOW}[3/3] Verifying pip...${NC}"
+                        local pip_exe="$version_dir/bin/pip3"
+                        if [[ ! -x "$pip_exe" ]]; then
+                            # Try to bootstrap pip
+                            local get_pip_url="https://bootstrap.pypa.io/get-pip.py"
+                            local get_pip_path="$temp_dir/get-pip.py"
+                            if curl -sfSL "$get_pip_url" -o "$get_pip_path" 2>/dev/null; then
+                                "$version_dir/bin/python3" "$get_pip_path" --no-warn-script-location 2>/dev/null || true
+                            fi
+                        fi
+                        rm -rf "$temp_dir"
+
+                        echo ""
+                        echo -e "${GREEN}=============================================${NC}"
+                        echo -e "${GREEN}  Python $version installed successfully!${NC}"
+                        echo -e "${GREEN}=============================================${NC}"
+                        echo ""
+                        echo "  Location: $version_dir"
+                        echo ""
+                        echo -e "${YELLOW}  Next steps:${NC}"
+                        echo -e "${CYAN}    pvm use $version        # Switch to this version${NC}"
+                        echo -e "${CYAN}    python3 --version       # Verify installation${NC}"
+                        echo ""
+                        return 0
+                    fi
+                fi
+                echo -e "${YELLOW}      Prebuilt binary not available, falling back to source build...${NC}"
+                rm -rf "$temp_dir"
+            fi
+        fi
+        echo -e "${YELLOW}      Could not download prebuilt binary, falling back to source build...${NC}"
+    fi
+
+    # --- Fallback: build from source ---
+    local mirror
+    mirror=$(pvm_get_mirror)
+
+    echo -e "${YELLOW}[1/5] Downloading Python $version source...${NC}"
+
     local source_url="$mirror/$version/Python-$version.tgz"
     local temp_dir
     temp_dir=$(mktemp -d)
     local source_file="$temp_dir/Python-$version.tgz"
-    
-    echo -e "${YELLOW}[1/5] Downloading Python $version source...${NC}"
     echo -e "${GRAY}      URL: $source_url${NC}"
-    
+
     if ! curl -fSL "$source_url" -o "$source_file" 2>/dev/null; then
         echo -e "${RED}Error: Failed to download Python $version${NC}"
         echo "URL: $source_url"
         rm -rf "$temp_dir"
         return 1
     fi
-    
     echo -e "${GREEN}      Download complete!${NC}"
-    
+
     echo -e "${YELLOW}[2/5] Extracting source files...${NC}"
     tar -xzf "$source_file" -C "$temp_dir"
-    
     local source_dir="$temp_dir/Python-$version"
-    
+
     if [[ ! -d "$source_dir" ]]; then
         echo -e "${RED}Error: Failed to extract Python source${NC}"
         rm -rf "$temp_dir"
         return 1
     fi
-    
-    # Check dependencies
-    pvm_check_dependencies || {
-        echo -e "${YELLOW}Continuing anyway...${NC}"
-    }
-    
+
+    pvm_check_dependencies || { echo -e "${YELLOW}Continuing anyway...${NC}"; }
     echo -e "${GREEN}      Extraction complete!${NC}"
-    
+
     echo -e "${YELLOW}[3/5] Configuring build options...${NC}"
     cd "$source_dir"
-    
-    # Configure with optimization
     local configure_opts="--prefix=$version_dir --enable-optimizations --with-ensurepip=install"
-    
-    # Add macOS specific options
     if [[ "$(uname -s)" == "Darwin" ]]; then
-        # Try to find OpenSSL from Homebrew
-        if [[ -d "/opt/homebrew/opt/openssl@3" ]]; then
-            configure_opts="$configure_opts --with-openssl=/opt/homebrew/opt/openssl@3"
-        elif [[ -d "/usr/local/opt/openssl@3" ]]; then
-            configure_opts="$configure_opts --with-openssl=/usr/local/opt/openssl@3"
-        elif [[ -d "/opt/homebrew/opt/openssl@1.1" ]]; then
-            configure_opts="$configure_opts --with-openssl=/opt/homebrew/opt/openssl@1.1"
-        elif [[ -d "/usr/local/opt/openssl@1.1" ]]; then
-            configure_opts="$configure_opts --with-openssl=/usr/local/opt/openssl@1.1"
-        fi
+        for d in /opt/homebrew/opt/openssl@3 /usr/local/opt/openssl@3 /opt/homebrew/opt/openssl@1.1 /usr/local/opt/openssl@1.1; do
+            if [[ -d "$d" ]]; then configure_opts="$configure_opts --with-openssl=$d"; break; fi
+        done
     fi
-    
     if ! ./configure $configure_opts > "$temp_dir/configure.log" 2>&1; then
-        echo -e "${RED}Error: Configuration failed. Check $temp_dir/configure.log for details.${NC}"
-        cd - > /dev/null 2>&1
-        rm -rf "$temp_dir"
-        return 1
+        echo -e "${RED}Error: Configuration failed. Check $temp_dir/configure.log${NC}"
+        cd - > /dev/null 2>&1; rm -rf "$temp_dir"; return 1
     fi
-    
     echo -e "${GREEN}      Configuration complete!${NC}"
-    
+
     echo -e "${YELLOW}[4/5] Building (this may take 5-15 minutes)...${NC}"
     local cpu_count
     cpu_count=$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 2)
     echo -e "${GRAY}      Using $cpu_count CPU cores${NC}"
-    
     if ! make -j"$cpu_count" > "$temp_dir/make.log" 2>&1; then
-        echo -e "${RED}Error: Build failed. Check $temp_dir/make.log for details.${NC}"
-        cd - > /dev/null 2>&1
-        rm -rf "$temp_dir"
-        return 1
+        echo -e "${RED}Error: Build failed. Check $temp_dir/make.log${NC}"
+        cd - > /dev/null 2>&1; rm -rf "$temp_dir"; return 1
     fi
-    
     echo -e "${GREEN}      Build complete!${NC}"
-    
+
     echo -e "${YELLOW}[5/5] Installing to $version_dir...${NC}"
     if ! make install > "$temp_dir/install.log" 2>&1; then
-        echo -e "${RED}Error: Installation failed. Check $temp_dir/install.log for details.${NC}"
-        cd - > /dev/null 2>&1
-        rm -rf "$temp_dir"
-        return 1
+        echo -e "${RED}Error: Installation failed. Check $temp_dir/install.log${NC}"
+        cd - > /dev/null 2>&1; rm -rf "$temp_dir"; return 1
     fi
-    
-    # Cleanup
+
     cd - > /dev/null
     rm -rf "$temp_dir"
-    
+
     echo ""
     echo -e "${GREEN}=============================================${NC}"
     echo -e "${GREEN}  Python $version installed successfully!${NC}"
@@ -878,21 +1046,267 @@ pvm_show_config() {
     echo ""
 }
 
+# --- Virtual Environment Management ---
+
+pvm_venv() {
+    local subcmd="$1"
+    local name="$2"
+    local venvs_dir="$PVM_VENVS_DIR"
+    mkdir -p "$venvs_dir"
+
+    case "$subcmd" in
+        ""|create)
+            if [[ -z "$name" ]]; then
+                echo -e "${RED}Error: Please specify a venv name.${NC}"
+                echo "Usage: pvm venv <name>"
+                return 1
+            fi
+            local current
+            current=$(pvm_get_current)
+            if [[ -z "$current" ]]; then
+                echo -e "${RED}Error: No Python version active. Run: pvm use <version>${NC}"
+                return 1
+            fi
+            local python_exe="$PVM_HOME/versions/$current/bin/python3"
+            if [[ ! -x "$python_exe" ]]; then
+                echo -e "${RED}Error: Python executable not found.${NC}"
+                return 1
+            fi
+            local venv_path="$venvs_dir/$name"
+            if [[ -d "$venv_path" ]]; then
+                echo -e "${YELLOW}Virtual environment '$name' already exists.${NC}"
+                return 0
+            fi
+            echo -e "${CYAN}Creating virtual environment '$name'...${NC}"
+            "$python_exe" -m venv "$venv_path" 2>/dev/null
+            if [[ -d "$venv_path" ]]; then
+                echo -e "${GREEN}Created: $venv_path${NC}"
+                echo -e "${GRAY}Activate: source $venv_path/bin/activate${NC}"
+            else
+                echo -e "${RED}Error: Failed to create virtual environment.${NC}"
+            fi
+            ;;
+        list)
+            if [[ ! -d "$venvs_dir" ]] || [[ -z "$(ls -A "$venvs_dir" 2>/dev/null)" ]]; then
+                echo -e "${YELLOW}No virtual environments found.${NC}"
+                return 0
+            fi
+            echo -e "\n${CYAN}Virtual environments:${NC}"
+            for d in "$venvs_dir"/*/; do
+                echo "  $(basename "$d")"
+            done
+            echo ""
+            ;;
+        remove)
+            if [[ -z "$name" ]]; then
+                echo -e "${RED}Error: Please specify a venv name to remove.${NC}"
+                return 1
+            fi
+            local venv_path="$venvs_dir/$name"
+            if [[ ! -d "$venv_path" ]]; then
+                echo -e "${RED}Error: Virtual environment '$name' not found.${NC}"
+                return 1
+            fi
+            rm -rf "$venv_path"
+            echo -e "${GREEN}Removed virtual environment '$name'.${NC}"
+            ;;
+        activate)
+            if [[ -z "$name" ]]; then
+                echo -e "${RED}Error: Please specify a venv name.${NC}"
+                return 1
+            fi
+            local venv_path="$venvs_dir/$name"
+            if [[ ! -d "$venv_path" ]]; then
+                echo -e "${RED}Error: Virtual environment '$name' not found.${NC}"
+                return 1
+            fi
+            echo -e "${YELLOW}Run this command in your shell:${NC}"
+            echo -e "${CYAN}  source $venv_path/bin/activate${NC}"
+            ;;
+        *)
+            echo -e "${YELLOW}Usage: pvm venv <create|list|remove|activate> [name]${NC}"
+            ;;
+    esac
+}
+
+# --- Package Management ---
+
+pvm_pip() {
+    local subcmd="$1"
+    shift || true
+
+    local current
+    current=$(pvm_get_current)
+    if [[ -z "$current" ]]; then
+        echo -e "${RED}Error: No Python version active. Run: pvm use <version>${NC}"
+        return 1
+    fi
+    local pip_exe="$PVM_HOME/versions/$current/bin/pip3"
+    if [[ ! -x "$pip_exe" ]]; then
+        echo -e "${RED}Error: pip not found for current Python version.${NC}"
+        return 1
+    fi
+
+    case "$subcmd" in
+        install)
+            if [[ $# -eq 0 ]]; then
+                echo -e "${RED}Error: Please specify a package to install.${NC}"
+                echo "Usage: pvm pip install <package>"
+                return 1
+            fi
+            "$pip_exe" install "$@"
+            ;;
+        uninstall)
+            if [[ $# -eq 0 ]]; then
+                echo -e "${RED}Error: Please specify a package to uninstall.${NC}"
+                return 1
+            fi
+            "$pip_exe" uninstall -y "$@"
+            ;;
+        list)
+            "$pip_exe" list
+            ;;
+        upgrade)
+            if [[ $# -eq 0 ]]; then
+                echo -e "${RED}Error: Please specify a package to upgrade.${NC}"
+                return 1
+            fi
+            "$pip_exe" install --upgrade "$@"
+            ;;
+        *)
+            echo -e "${YELLOW}Usage: pvm pip <install|uninstall|list|upgrade> [package]${NC}"
+            ;;
+    esac
+}
+
+# --- Project Management ---
+
+pvm_project() {
+    local subcmd="$1"
+    shift || true
+
+    case "$subcmd" in
+        init)
+            local pyproject="pyproject.toml"
+            if [[ -f "$pyproject" ]]; then
+                echo -e "${YELLOW}pyproject.toml already exists in this directory.${NC}"
+                return 0
+            fi
+            printf "Project name [myproject]: "
+            read -r project_name
+            project_name="${project_name:-myproject}"
+            printf "Description: "
+            read -r description
+            local current
+            current=$(pvm_get_current)
+            local pyversion="${current:-3.12}"
+            printf "Python version [$pyversion]: "
+            read -r input_ver
+            pyversion="${input_ver:-$pyversion}"
+
+            cat > "$pyproject" << PROJ
+[project]
+name = "$project_name"
+version = "0.1.0"
+description = "$description"
+requires-python = ">=$pyversion"
+dependencies = []
+
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.backends._legacy:_Backend"
+PROJ
+            echo -e "${GREEN}Created pyproject.toml${NC}"
+
+            # Create project venv
+            local python_exe="$PVM_HOME/versions/$current/bin/python3"
+            if [[ -x "$python_exe" ]]; then
+                local venv_path=".pvm-venv"
+                if [[ ! -d "$venv_path" ]]; then
+                    echo -e "${CYAN}Creating project virtual environment...${NC}"
+                    "$python_exe" -m venv "$venv_path" 2>/dev/null
+                    echo -e "${GREEN}Created .pvm-venv/${NC}"
+                fi
+            fi
+            ;;
+        add)
+            if [[ $# -eq 0 ]]; then
+                echo -e "${RED}Error: Please specify a package to add.${NC}"
+                return 1
+            fi
+            if [[ ! -f "pyproject.toml" ]]; then
+                echo -e "${RED}Error: No pyproject.toml found. Run 'pvm init' first.${NC}"
+                return 1
+            fi
+            pvm_pip install "$@"
+            local pkg="$1"
+            pkg="${pkg%%[*}"  # strip version spec
+            if grep -q 'dependencies = \[\]' pyproject.toml; then
+                sed -i "s/dependencies = \[\]/dependencies = [\n    \"$pkg\",\n]/" pyproject.toml
+            else
+                sed -i "/dependencies = \[/a\    \"$pkg\"," pyproject.toml
+            fi
+            echo -e "${GREEN}Added '$pkg' to pyproject.toml${NC}"
+            ;;
+        remove)
+            if [[ $# -eq 0 ]]; then
+                echo -e "${RED}Error: Please specify a package to remove.${NC}"
+                return 1
+            fi
+            local pkg="$1"
+            pkg="${pkg%%[*}"
+            if [[ -f "pyproject.toml" ]]; then
+                sed -i "/\"$pkg\"/d" pyproject.toml
+                echo -e "${GREEN}Removed '$pkg' from pyproject.toml${NC}"
+            fi
+            pvm_pip uninstall "$@"
+            ;;
+        run)
+            if [[ $# -eq 0 ]]; then
+                echo -e "${RED}Error: Please specify a command to run.${NC}"
+                return 1
+            fi
+            local python_exe=".pvm-venv/bin/python"
+            if [[ ! -x "$python_exe" ]]; then
+                echo -e "${RED}Error: No .pvm-venv found. Run 'pvm init' first.${NC}"
+                return 1
+            fi
+            "$python_exe" "$@"
+            ;;
+        *)
+            echo -e "${YELLOW}Usage: pvm <init|add|remove|run> [args]${NC}"
+            ;;
+    esac
+}
+
 # Main function
 pvm() {
+    # Save original values for --home per-command restore
+    local _orig_PVM_HOME="$PVM_HOME"
+    local _orig_PVM_VERSIONS_DIR="$PVM_VERSIONS_DIR"
+    local _orig_PVM_CURRENT_FILE="$PVM_CURRENT_FILE"
+    local _orig_PVM_SETTINGS_FILE="$PVM_SETTINGS_FILE"
+    local _orig_PVM_SYMLINK="$PVM_SYMLINK"
+    local _orig_PVM_SHIMS_DIR="$PVM_SHIMS_DIR"
+
     # Parse --home argument before anything else
     local new_args=()
     while [[ $# -gt 0 ]]; do
         case "$1" in
             --home)
                 if [[ -n "$2" ]]; then
-                    PVM_HOME_OVERRIDE="$2"
                     PVM_HOME="$2"
                     PVM_VERSIONS_DIR="$PVM_HOME/versions"
                     PVM_CURRENT_FILE="$PVM_HOME/current"
                     PVM_SETTINGS_FILE="$PVM_HOME/settings.json"
                     PVM_SYMLINK="$PVM_HOME/python"
                     PVM_SHIMS_DIR="$PVM_HOME/shims"
+                    PVM_VENVS_DIR="$PVM_HOME/venvs"
+                    # Auto-create directory if needed
+                    if [[ ! -d "$PVM_HOME" ]]; then
+                        mkdir -p "$PVM_HOME"
+                        echo -e "${GRAY}  Created data directory: $PVM_HOME${NC}"
+                    fi
                     shift 2
                 else
                     echo -e "${RED}Error: --home requires a path argument${NC}"
@@ -908,6 +1322,9 @@ pvm() {
     set -- "${new_args[@]+"${new_args[@]}"}"
 
     pvm_init
+
+    # The command runs with possibly overridden PVM_HOME.
+    # We use a trap to restore original values after the command completes.
     
     local command="$1"
     shift || true
@@ -921,7 +1338,7 @@ pvm() {
             fi
             ;;
         install)
-            pvm_install "$1"
+            pvm_install "$1" "$@"
             ;;
         uninstall)
             pvm_uninstall "$1"
@@ -941,6 +1358,25 @@ pvm() {
         arch|platform)
             pvm_show_platform
             ;;
+        venv)
+            pvm_venv "$1" "$2"
+            ;;
+        pip)
+            shift
+            pvm_pip "$@"
+            ;;
+        init)
+            pvm_project init
+            ;;
+        add)
+            pvm_project add "$1" "$@"
+            ;;
+        remove)
+            pvm_project remove "$1" "$@"
+            ;;
+        run)
+            pvm_project run "$1" "$@"
+            ;;
         --help|-h|help)
             pvm_help
             ;;
@@ -956,6 +1392,14 @@ pvm() {
             return 1
             ;;
     esac
+
+    # Restore original PVM_HOME (--home is per-command only)
+    PVM_HOME="$_orig_PVM_HOME"
+    PVM_VERSIONS_DIR="$_orig_PVM_VERSIONS_DIR"
+    PVM_CURRENT_FILE="$_orig_PVM_CURRENT_FILE"
+    PVM_SETTINGS_FILE="$_orig_PVM_SETTINGS_FILE"
+    PVM_SYMLINK="$_orig_PVM_SYMLINK"
+    PVM_SHIMS_DIR="$_orig_PVM_SHIMS_DIR"
 }
 
 # Run if executed directly (not sourced)

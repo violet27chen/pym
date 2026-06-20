@@ -13,10 +13,20 @@
 [CmdletBinding()]
 param(
     [Parameter()]
-    [string]$InstallDir = (Join-Path $env:USERPROFILE ".pvm"),
+    [string]$InstallDir = '',
     [Parameter()]
     [switch]$CDN
 )
+
+# Determine install directory: parameter > PVM_HOME env var > default
+if ([string]::IsNullOrEmpty($InstallDir)) {
+    if ($env:PVM_HOME) {
+        $InstallDir = $env:PVM_HOME
+    }
+    else {
+        $InstallDir = Join-Path $env:USERPROFILE ".pvm"
+    }
+}
 
 $ErrorActionPreference = "Stop"
 

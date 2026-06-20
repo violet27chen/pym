@@ -93,6 +93,13 @@ $script:PVM_CURRENT_FILE = Join-Path $script:PVM_HOME "current"
 $script:PVM_SETTINGS_FILE = Join-Path $script:PVM_HOME "settings.json"
 $script:PVM_SYMLINK = Join-Path $script:PVM_HOME "python"
 $script:PVM_SHIMS_DIR = Join-Path $script:PVM_HOME "shims"
+$script:PVM_VENVS_DIR = Join-Path $script:PVM_HOME "venvs"
+
+# Auto-create --home directory if it doesn't exist
+if (-not (Test-Path $script:PVM_HOME)) {
+    New-Item -ItemType Directory -Path $script:PVM_HOME -Force | Out-Null
+    Write-Host "  Created data directory: $($script:PVM_HOME)" -ForegroundColor DarkGray
+}
 
 # Default Python download mirror
 $script:DEFAULT_MIRROR = "https://www.python.org/ftp/python"
@@ -115,15 +122,93 @@ $script:PIP_MIRRORS = @{
     "aliyun"    = "https://mirrors.aliyun.com/pypi/simple"
 }
 
-# Available Python versions (commonly used stable versions)
-$script:AVAILABLE_VERSIONS = @(
-    "3.13.1", "3.13.0",
-    "3.12.8", "3.12.7", "3.12.6", "3.12.5", "3.12.4", "3.12.3", "3.12.2", "3.12.1", "3.12.0",
-    "3.11.11", "3.11.10", "3.11.9", "3.11.8", "3.11.7", "3.11.6", "3.11.5", "3.11.4", "3.11.3", "3.11.2", "3.11.1", "3.11.0",
-    "3.10.16", "3.10.15", "3.10.14", "3.10.13", "3.10.12", "3.10.11", "3.10.10", "3.10.9", "3.10.8", "3.10.7", "3.10.6", "3.10.5", "3.10.4", "3.10.3", "3.10.2", "3.10.1", "3.10.0",
-    "3.9.21", "3.9.20", "3.9.19", "3.9.18", "3.9.17", "3.9.16", "3.9.15", "3.9.14", "3.9.13", "3.9.12", "3.9.11", "3.9.10", "3.9.9", "3.9.8", "3.9.7", "3.9.6", "3.9.5", "3.9.4", "3.9.3", "3.9.2", "3.9.1", "3.9.0",
-    "3.8.20", "3.8.19", "3.8.18", "3.8.17", "3.8.16", "3.8.15", "3.8.14", "3.8.13", "3.8.12", "3.8.11", "3.8.10", "3.8.9", "3.8.8", "3.8.7", "3.8.6", "3.8.5", "3.8.4", "3.8.3", "3.8.2", "3.8.1", "3.8.0"
+# Fallback Python versions (used when network is unavailable)
+$script:FALLBACK_VERSIONS = @(
+    "3.14.6", "3.14.5", "3.14.4", "3.14.3", "3.14.2", "3.14.1", "3.14.0",
+    "3.13.14", "3.13.13", "3.13.12", "3.13.11", "3.13.10", "3.13.9", "3.13.8", "3.13.7", "3.13.6", "3.13.5", "3.13.4", "3.13.3", "3.13.2", "3.13.1", "3.13.0",
+    "3.12.9", "3.12.8", "3.12.7", "3.12.6", "3.12.5", "3.12.4", "3.12.3", "3.12.2", "3.12.1", "3.12.0",
+    "3.11.12", "3.11.11", "3.11.10", "3.11.9", "3.11.8", "3.11.7", "3.11.6", "3.11.5", "3.11.4", "3.11.3", "3.11.2", "3.11.1", "3.11.0",
+    "3.10.17", "3.10.16", "3.10.15", "3.10.14", "3.10.13", "3.10.12", "3.10.11", "3.10.10", "3.10.9", "3.10.8", "3.10.7", "3.10.6", "3.10.5", "3.10.4", "3.10.3", "3.10.2", "3.10.1", "3.10.0",
+    "3.9.22", "3.9.21", "3.9.20", "3.9.19", "3.9.18", "3.9.17", "3.9.16", "3.9.15", "3.9.14", "3.9.13", "3.9.12", "3.9.11", "3.9.10", "3.9.9", "3.9.8", "3.9.7", "3.9.6", "3.9.5", "3.9.4", "3.9.3", "3.9.2", "3.9.1", "3.9.0",
+    "3.8.21", "3.8.20", "3.8.19", "3.8.18", "3.8.17", "3.8.16", "3.8.15", "3.8.14", "3.8.13", "3.8.12", "3.8.11", "3.8.10", "3.8.9", "3.8.8", "3.8.7", "3.8.6", "3.8.5", "3.8.4", "3.8.3", "3.8.2", "3.8.1", "3.8.0"
 )
+$script:AVAILABLE_VERSIONS = $null  # Populated lazily from python.org API
+
+function Get-AvailableVersions {
+    <#
+    .SYNOPSIS
+        Fetch available Python versions. Priority: CDN versions.json -> python.org API -> fallback list.
+    #>
+    if ($script:AVAILABLE_VERSIONS -and $script:AVAILABLE_VERSIONS.Count -gt 0) {
+        return $script:AVAILABLE_VERSIONS
+    }
+
+    $cacheFile = Join-Path $script:PVM_HOME "versions_cache.json"
+
+    # 1. Try local cache (< 24h)
+    if (Test-Path $cacheFile) {
+        $cacheAge = (Get-Date) - (Get-Item $cacheFile).LastWriteTime
+        if ($cacheAge.TotalHours -lt 24) {
+            try {
+                $cached = Get-Content $cacheFile -Raw | ConvertFrom-Json
+                if ($cached.versions -and $cached.versions.Count -gt 0) {
+                    $script:AVAILABLE_VERSIONS = @($cached.versions)
+                    return $script:AVAILABLE_VERSIONS
+                }
+            }
+            catch { }
+        }
+    }
+
+    # 2. Try jsDelivr CDN (global, fast)
+    Write-Host "  Fetching versions from CDN..." -ForegroundColor DarkGray
+    $cdnUrls = @(
+        "https://cdn.jsdelivr.net/gh/violet27chen/pym@main/versions.json",
+        "https://raw.githubusercontent.com/violet27chen/pym/main/versions.json"
+    )
+    foreach ($url in $cdnUrls) {
+        try {
+            $ProgressPreference = 'SilentlyContinue'
+            $response = Invoke-WebRequest -Uri $url -UseBasicParsing -TimeoutSec 10
+            $ProgressPreference = 'Continue'
+            $data = $response.Content | ConvertFrom-Json
+            if ($data.versions -and $data.versions.Count -gt 0) {
+                $script:AVAILABLE_VERSIONS = @($data.versions)
+                # Cache locally
+                $data | ConvertTo-Json | Set-Content -Path $cacheFile -Encoding UTF8
+                return $script:AVAILABLE_VERSIONS
+            }
+        }
+        catch { }
+    }
+
+    # 3. Try python.org API
+    Write-Host "  Trying python.org API..." -ForegroundColor DarkGray
+    try {
+        $ProgressPreference = 'SilentlyContinue'
+        $response = Invoke-WebRequest -Uri "https://www.python.org/api/v2/downloads/release/?is_published=true&pre_release=false" -UseBasicParsing -TimeoutSec 15
+        $ProgressPreference = 'Continue'
+        $releases = $response.Content | ConvertFrom-Json
+        $versions = @()
+        foreach ($release in $releases) {
+            if ($release.name -match 'Python\s+([\d]+\.[\d]+\.[\d]+)') {
+                $versions += $matches[1]
+            }
+        }
+        $versions = $versions | Sort-Object { [version]$_ } -Descending
+        if ($versions.Count -gt 0) {
+            $script:AVAILABLE_VERSIONS = $versions
+            @{ versions = $versions } | ConvertTo-Json | Set-Content -Path $cacheFile -Encoding UTF8
+            return $script:AVAILABLE_VERSIONS
+        }
+    }
+    catch { }
+
+    # 4. Fallback to built-in list
+    Write-Host "  Using built-in version list." -ForegroundColor Yellow
+    $script:AVAILABLE_VERSIONS = $script:FALLBACK_VERSIONS
+    return $script:AVAILABLE_VERSIONS
+}
 
 function Initialize-Pvm {
     <#
@@ -197,12 +282,28 @@ Commands:
     which                   Show the path to the current Python executable
     config [mirror]         Configure mirror (show current if no argument)
     arch                    Show detected system architecture
+
+    venv <name>             Create a virtual environment
+    venv list               List all virtual environments
+    venv remove <name>      Remove a virtual environment
+    venv activate <name>    Show activation command
+
+    pip install <pkg>       Install a package
+    pip uninstall <pkg>     Uninstall a package
+    pip list                List installed packages
+    pip upgrade <pkg>       Upgrade a package
+
+    init                    Initialize a new project (pyproject.toml)
+    add <pkg>               Add a dependency
+    remove <pkg>            Remove a dependency
+    run <cmd>               Run a command in project venv
+
     --help, -h              Show this help message
     --version, -v           Show pvm version
 
 Options:
     --arch <32|64|arm64>    Architecture for install (auto-detect if not specified)
-    --home <path>           Set pvm data directory (overrides PVM_HOME env var)
+    --home <path>           Set pvm data directory for this command only (auto-creates if needed)
 
 Mirror Presets:
     tsinghua, qinghua       Tsinghua University (China)
@@ -213,15 +314,16 @@ Mirror Presets:
 Examples:
     pvm install 3.12.4           Install Python 3.12.4
     pvm use 3.12.4               Switch to Python 3.12.4
+    pvm venv myenv               Create a virtual environment
+    pvm pip install requests     Install a package
+    pvm init                     Initialize a project
     pvm config tsinghua          Use Tsinghua mirror
-    pvm config huawei            Use Huawei Cloud mirror
-    pvm config default           Use official python.org
 
 Configuration:
     pvm stores data in: $($script:PVM_HOME)
 
 Uninstall pvm:
-    Run: powershell -ExecutionPolicy Bypass -File "$($script:PVM_HOME)\uninstall.ps1"
+    Run: & "$($script:PVM_HOME)\uninstall.ps1"
 
 "@
     Write-Host $helpText
@@ -264,24 +366,33 @@ function Show-InstalledVersions {
     #>
     $versions = Get-InstalledVersions
     $current = Get-CurrentVersion
-    
+
     if ($versions.Count -eq 0) {
-        Write-Host "No Python versions installed." -ForegroundColor Yellow
-        Write-Host "Use 'pvm install <version>' to install a version."
-        Write-Host "Use 'pvm list available' to see available versions."
+        Write-Host ""
+        Write-Host "  No Python versions installed." -ForegroundColor Yellow
+        Write-Host ""
+        Write-Host "  Install one:" -ForegroundColor White
+        Write-Host "    pvm install 3.13         # latest 3.13.x" -ForegroundColor Cyan
+        Write-Host "    pvm install 3.12.4       # specific version" -ForegroundColor Cyan
+        Write-Host "    pvm list available       # see all options" -ForegroundColor Cyan
+        Write-Host ""
         return
     }
-    
-    Write-Host "`nInstalled Python versions:" -ForegroundColor Cyan
+
+    Write-Host ""
+    Write-Host "  Installed Python versions ($($versions.Count)):" -ForegroundColor Cyan
     Write-Host ""
     foreach ($v in $versions) {
         if ($v -eq $current) {
-            Write-Host "  * $v (current)" -ForegroundColor Green
+            Write-Host "    * $v" -ForegroundColor Green -NoNewline
+            Write-Host " (current)" -ForegroundColor DarkGray
         }
         else {
-            Write-Host "    $v"
+            Write-Host "    $v" -ForegroundColor White
         }
     }
+    Write-Host ""
+    Write-Host "  Use 'pvm list available' to see downloadable versions." -ForegroundColor DarkGray
     Write-Host ""
 }
 
@@ -291,18 +402,27 @@ function Show-AvailableVersions {
         Display available Python versions for download
     #>
     $installed = Get-InstalledVersions
-    
-    Write-Host "`nAvailable Python versions:" -ForegroundColor Cyan
+    $available = Get-AvailableVersions
+    $current = Get-CurrentVersion
+
     Write-Host ""
-    
-    $grouped = $script:AVAILABLE_VERSIONS | Group-Object { $_.Split('.')[0..1] -join '.' }
-    
+    Write-Host "  Available Python versions ($($available.Count) total, $($installed.Count) installed):" -ForegroundColor Cyan
+    Write-Host ""
+
+    $grouped = $available | Group-Object { $_.Split('.')[0..1] -join '.' }
+
     foreach ($group in $grouped | Sort-Object { [version]$_.Name } -Descending) {
-        Write-Host "  $($group.Name).x:" -ForegroundColor Yellow
+        $installedInGroup = ($group.Group | Where-Object { $installed -contains $_ }).Count
+        $marker = if ($installedInGroup -gt 0) { " ($installedInGroup installed)" } else { "" }
+        Write-Host "  $($group.Name).x$marker" -ForegroundColor Yellow
         $line = "    "
         foreach ($v in $group.Group) {
             $isInstalled = $installed -contains $v
-            if ($isInstalled) {
+            $isCurrent = $v -eq $current
+            if ($isCurrent) {
+                $line += "*$v* "
+            }
+            elseif ($isInstalled) {
                 $line += "[$v] "
             }
             else {
@@ -312,7 +432,7 @@ function Show-AvailableVersions {
         Write-Host $line
     }
     Write-Host ""
-    Write-Host "  [version] = already installed" -ForegroundColor DarkGray
+    Write-Host "  *version* = current    [version] = installed    plain = not installed" -ForegroundColor DarkGray
     Write-Host ""
 }
 
@@ -334,7 +454,7 @@ function Resolve-PythonVersion {
     <#
     .SYNOPSIS
         Resolve a partial version string to the latest full version.
-        e.g. "3.13" -> "3.13.2", "3" -> "3.13.2"
+        e.g. "3.13" -> "3.13.14", "3" -> "3.14.6"
     #>
     param([string]$Version)
 
@@ -344,7 +464,8 @@ function Resolve-PythonVersion {
     }
 
     # Partial version: match from available versions (already sorted descending)
-    $matches = $script:AVAILABLE_VERSIONS | Where-Object { $_ -like "$Version*" -or $_ -like "$Version.*" }
+    $available = Get-AvailableVersions
+    $matches = $available | Where-Object { $_ -like "$Version*" -or $_ -like "$Version.*" }
     if ($matches) {
         $resolved = $matches[0]
         Write-Host "Resolved version: $Version -> $resolved" -ForegroundColor DarkGray
@@ -948,7 +1069,7 @@ function Show-PvmConfig {
     #>
     $settings = Get-PvmSettings
     $mirror = if ($settings.mirror) { $settings.mirror } else { $script:DEFAULT_MIRROR }
-    
+
     # Get pip config
     $pipConfigFile = Join-Path $env:APPDATA "pip\pip.ini"
     $pipMirror = "https://pypi.org/simple (default)"
@@ -958,7 +1079,7 @@ function Show-PvmConfig {
             $pipMirror = $matches[1].Trim()
         }
     }
-    
+
     Write-Host ""
     Write-Host "pvm Configuration:" -ForegroundColor Cyan
     Write-Host ""
@@ -974,6 +1095,249 @@ function Show-PvmConfig {
     Write-Host "  pvm config aliyun     - Aliyun"
     Write-Host "  pvm config default    - python.org / pypi.org (Official)"
     Write-Host ""
+}
+
+# --- Virtual Environment Management ---
+
+function Get-CurrentPythonExe {
+    $current = Get-CurrentVersion
+    if (-not $current) { return $null }
+    $exe = Join-Path $script:PVM_VERSIONS_DIR "$current\python.exe"
+    if (Test-Path $exe) { return $exe }
+    return $null
+}
+
+function Invoke-PvmVenv {
+    param([string]$SubCommand, [string]$Name)
+
+    $venvsDir = $script:PVM_VENVS_DIR
+    if (-not (Test-Path $venvsDir)) {
+        New-Item -ItemType Directory -Path $venvsDir -Force | Out-Null
+    }
+
+    switch ($SubCommand) {
+        { $_ -eq '' -or $_ -eq 'create' } {
+            if ([string]::IsNullOrEmpty($Name)) {
+                Write-Host "Error: Please specify a venv name." -ForegroundColor Red
+                Write-Host "Usage: pvm venv <name>"
+                return
+            }
+            $pythonExe = Get-CurrentPythonExe
+            if (-not $pythonExe) {
+                Write-Host "Error: No Python version active. Run: pvm use <version>" -ForegroundColor Red
+                return
+            }
+            $venvPath = Join-Path $venvsDir $Name
+            if (Test-Path $venvPath) {
+                Write-Host "Virtual environment '$Name' already exists." -ForegroundColor Yellow
+                return
+            }
+            Write-Host "Creating virtual environment '$Name'..." -ForegroundColor Cyan
+            & $pythonExe -m venv $venvPath 2>&1 | Out-Null
+            if (Test-Path $venvPath) {
+                Write-Host "Created: $venvPath" -ForegroundColor Green
+                Write-Host "Activate: & `"$venvPath\Scripts\Activate.ps1`"" -ForegroundColor DarkGray
+            }
+            else {
+                Write-Host "Error: Failed to create virtual environment." -ForegroundColor Red
+            }
+        }
+        'list' {
+            if (-not (Test-Path $venvsDir) -or (Get-ChildItem -Path $venvsDir -Directory -ErrorAction SilentlyContinue).Count -eq 0) {
+                Write-Host "No virtual environments found." -ForegroundColor Yellow
+                return
+            }
+            Write-Host "`nVirtual environments:" -ForegroundColor Cyan
+            Get-ChildItem -Path $venvsDir -Directory | ForEach-Object {
+                Write-Host "  $($_.Name)" -ForegroundColor White
+            }
+            Write-Host ""
+        }
+        'remove' {
+            if ([string]::IsNullOrEmpty($Name)) {
+                Write-Host "Error: Please specify a venv name to remove." -ForegroundColor Red
+                return
+            }
+            $venvPath = Join-Path $venvsDir $Name
+            if (-not (Test-Path $venvPath)) {
+                Write-Host "Error: Virtual environment '$Name' not found." -ForegroundColor Red
+                return
+            }
+            Remove-Item -Path $venvPath -Recurse -Force
+            Write-Host "Removed virtual environment '$Name'." -ForegroundColor Green
+        }
+        'activate' {
+            if ([string]::IsNullOrEmpty($Name)) {
+                Write-Host "Error: Please specify a venv name." -ForegroundColor Red
+                return
+            }
+            $venvPath = Join-Path $venvsDir $Name
+            if (-not (Test-Path $venvPath)) {
+                Write-Host "Error: Virtual environment '$Name' not found." -ForegroundColor Red
+                return
+            }
+            Write-Host "Run this command in your PowerShell session:" -ForegroundColor Yellow
+            Write-Host "  & `"$venvPath\Scripts\Activate.ps1`"" -ForegroundColor Cyan
+        }
+        default {
+            Write-Host "Usage: pvm venv <create|list|remove|activate> [name]" -ForegroundColor Yellow
+        }
+    }
+}
+
+# --- Package Management ---
+
+function Invoke-PvmPip {
+    param([string]$SubCommand, [string[]]$ExtraArgs)
+
+    $pythonExe = Get-CurrentPythonExe
+    if (-not $pythonExe) {
+        Write-Host "Error: No Python version active. Run: pvm use <version>" -ForegroundColor Red
+        return
+    }
+    $versionDir = Split-Path $pythonExe
+    $pipExe = Join-Path $versionDir "Scripts\pip.exe"
+    if (-not (Test-Path $pipExe)) {
+        Write-Host "Error: pip not found for current Python version." -ForegroundColor Red
+        return
+    }
+
+    switch ($SubCommand) {
+        'install' {
+            if ($ExtraArgs.Count -eq 0) {
+                Write-Host "Error: Please specify a package to install." -ForegroundColor Red
+                Write-Host "Usage: pvm pip install <package>"
+                return
+            }
+            & $pipExe install @ExtraArgs
+        }
+        'uninstall' {
+            if ($ExtraArgs.Count -eq 0) {
+                Write-Host "Error: Please specify a package to uninstall." -ForegroundColor Red
+                return
+            }
+            & $pipExe uninstall -y @ExtraArgs
+        }
+        'list' {
+            & $pipExe list
+        }
+        'upgrade' {
+            if ($ExtraArgs.Count -eq 0) {
+                Write-Host "Error: Please specify a package to upgrade." -ForegroundColor Red
+                return
+            }
+            & $pipExe install --upgrade @ExtraArgs
+        }
+        default {
+            Write-Host "Usage: pvm pip <install|uninstall|list|upgrade> [package]" -ForegroundColor Yellow
+        }
+    }
+}
+
+# --- Project Management ---
+
+function Invoke-PvmProject {
+    param([string]$SubCommand, [string[]]$ExtraArgs)
+
+    switch ($SubCommand) {
+        'init' {
+            $pyprojectFile = Join-Path (Get-Location) "pyproject.toml"
+            if (Test-Path $pyprojectFile) {
+                Write-Host "pyproject.toml already exists in this directory." -ForegroundColor Yellow
+                return
+            }
+            $projectName = Read-Host "Project name [myproject]"
+            if ([string]::IsNullOrWhiteSpace($projectName)) { $projectName = "myproject" }
+            $description = Read-Host "Description"
+            $current = Get-CurrentVersion
+            $pyversion = if ($current) { $current } else { "3.12" }
+            $pyversion = Read-Host "Python version [$pyversion]"
+            if ([string]::IsNullOrWhiteSpace($pyversion)) { $pyversion = if ($current) { $current } else { "3.12" } }
+
+            $template = @"
+[project]
+name = "$projectName"
+version = "0.1.0"
+description = "$description"
+requires-python = ">=$pyversion"
+dependencies = []
+
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.backends._legacy:_Backend"
+"@
+            Set-Content -Path $pyprojectFile -Value $template -Encoding UTF8
+            Write-Host "Created pyproject.toml" -ForegroundColor Green
+
+            # Create project venv
+            $pythonExe = Get-CurrentPythonExe
+            if ($pythonExe) {
+                $venvPath = Join-Path (Get-Location) ".pvm-venv"
+                if (-not (Test-Path $venvPath)) {
+                    Write-Host "Creating project virtual environment..." -ForegroundColor Cyan
+                    & $pythonExe -m venv $venvPath 2>&1 | Out-Null
+                    Write-Host "Created .pvm-venv/" -ForegroundColor Green
+                }
+            }
+        }
+        'add' {
+            if ($ExtraArgs.Count -eq 0) {
+                Write-Host "Error: Please specify a package to add." -ForegroundColor Red
+                return
+            }
+            $pyprojectFile = Join-Path (Get-Location) "pyproject.toml"
+            if (-not (Test-Path $pyprojectFile)) {
+                Write-Host "Error: No pyproject.toml found. Run 'pvm init' first." -ForegroundColor Red
+                return
+            }
+            # Install the package
+            Invoke-PvmPip -SubCommand "install" -ExtraArgs $ExtraArgs
+            # Add to pyproject.toml dependencies
+            $content = Get-Content $pyprojectFile -Raw
+            $pkg = $ExtraArgs[0] -replace '[\[].*[\]]', ''  # strip version spec
+            if ($content -match 'dependencies\s*=\s*\[\s*\]') {
+                $content = $content -replace 'dependencies\s*=\s*\[\s*\]', "dependencies = [`n    `"$pkg`"`n]"
+            }
+            elseif ($content -match 'dependencies\s*=\s*\[') {
+                $content = $content -replace '(dependencies\s*=\s*\[)', "`$1`n    `"$pkg`","
+            }
+            Set-Content -Path $pyprojectFile -Value $content -Encoding UTF8
+            Write-Host "Added '$pkg' to pyproject.toml" -ForegroundColor Green
+        }
+        'remove' {
+            if ($ExtraArgs.Count -eq 0) {
+                Write-Host "Error: Please specify a package to remove." -ForegroundColor Red
+                return
+            }
+            $pyprojectFile = Join-Path (Get-Location) "pyproject.toml"
+            if (Test-Path $pyprojectFile) {
+                $pkg = $ExtraArgs[0] -replace '[\[].*[\]]', ''
+                $content = Get-Content $pyprojectFile -Raw
+                $content = $content -replace "    `"$pkg`",?\r?\n?", ""
+                $content = $content -replace "    `"$pkg`"", ""
+                Set-Content -Path $pyprojectFile -Value $content -Encoding UTF8
+                Write-Host "Removed '$pkg' from pyproject.toml" -ForegroundColor Green
+            }
+            Invoke-PvmPip -SubCommand "uninstall" -ExtraArgs $ExtraArgs
+        }
+        'run' {
+            if ($ExtraArgs.Count -eq 0) {
+                Write-Host "Error: Please specify a command to run." -ForegroundColor Red
+                return
+            }
+            $venvPath = Join-Path (Get-Location) ".pvm-venv"
+            $pythonExe = Join-Path $venvPath "Scripts\python.exe"
+            if (-not (Test-Path $pythonExe)) {
+                Write-Host "Error: No .pvm-venv found. Run 'pvm init' first." -ForegroundColor Red
+                return
+            }
+            $cmd = $ExtraArgs -join ' '
+            & $pythonExe @ExtraArgs
+        }
+        default {
+            Write-Host "Usage: pvm <init|add|remove|run> [args]" -ForegroundColor Yellow
+        }
+    }
 }
 
 # Main execution
@@ -1079,6 +1443,43 @@ switch ($Command) {
         Write-Host "  OS: Windows"
         Write-Host "  Architecture: $archDisplay"
         Write-Host ""
+    }
+    'venv' {
+        # Collect remaining args as: pvm venv <subcommand> [name]
+        $subCmd = $Version  # Position 1 maps to subcommand
+        $remainingArgs = $args
+        $subName = if ($remainingArgs.Count -gt 0) { $remainingArgs[0] } else { '' }
+        Invoke-PvmVenv -SubCommand $subCmd -Name $subName
+    }
+    'pip' {
+        $subCmd = $Version
+        $remainingArgs = $args
+        Invoke-PvmPip -SubCommand $subCmd -ExtraArgs $remainingArgs
+    }
+    'init' {
+        Invoke-PvmProject -SubCommand "init"
+    }
+    'add' {
+        $remainingArgs = $args
+        if ([string]::IsNullOrEmpty($Version) -and $remainingArgs.Count -gt 0) {
+            $Version = $remainingArgs[0]
+            $remainingArgs = $remainingArgs[1..($remainingArgs.Count - 1)]
+        }
+        $pkgArgs = @($Version) + $remainingArgs | Where-Object { $_ }
+        Invoke-PvmProject -SubCommand "add" -ExtraArgs $pkgArgs
+    }
+    'remove' {
+        $remainingArgs = $args
+        if ([string]::IsNullOrEmpty($Version) -and $remainingArgs.Count -gt 0) {
+            $Version = $remainingArgs[0]
+            $remainingArgs = $remainingArgs[1..($remainingArgs.Count - 1)]
+        }
+        $pkgArgs = @($Version) + $remainingArgs | Where-Object { $_ }
+        Invoke-PvmProject -SubCommand "remove" -ExtraArgs $pkgArgs
+    }
+    'run' {
+        $remainingArgs = @($Version) + $args | Where-Object { $_ }
+        Invoke-PvmProject -SubCommand "run" -ExtraArgs $remainingArgs
     }
     default {
         if ([string]::IsNullOrEmpty($Command)) {
