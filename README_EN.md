@@ -101,9 +101,20 @@ pvm --help
 
 ## Configuration
 
-pvm stores its data in `~/.pvm` (Unix) or `%USERPROFILE%\.pvm` (Windows).
+pvm stores its data in `~/.pvm` (Unix) or `%USERPROFILE%\.pvm` (Windows) by default.
 
-You can customize the data directory by setting the `PVM_HOME` environment variable:
+On first use, pvm will prompt you to choose a data directory. Press Enter to accept the default, or type a custom path. The choice is saved to `~/.pvmhome` for future sessions.
+
+You can also customize the data directory in other ways:
+
+### `--home` flag (per-command override)
+
+```bash
+pvm install 3.12 --home D:\pvm
+pvm use 3.12 --home /custom/path/.pvm
+```
+
+### `PVM_HOME` environment variable
 
 ```powershell
 # Windows (PowerShell) - set permanently
@@ -161,10 +172,10 @@ Available presets:
 
 ```powershell
 # Interactive uninstall (with confirmation)
-powershell -ExecutionPolicy Bypass -File uninstall.ps1
+powershell -ExecutionPolicy Bypass -File "$env:USERPROFILE\.pvm\uninstall.ps1"
 
 # Silent uninstall (no confirmation)
-powershell -ExecutionPolicy Bypass -File uninstall.ps1 -Force
+powershell -ExecutionPolicy Bypass -File "$env:USERPROFILE\.pvm\uninstall.ps1" -Force
 ```
 
 This will remove:
@@ -177,10 +188,10 @@ This will remove:
 
 ```bash
 # Interactive uninstall (with confirmation)
-bash uninstall.sh
+bash ~/.pvm/uninstall.sh
 
 # Silent uninstall (no confirmation)
-bash uninstall.sh --force
+bash ~/.pvm/uninstall.sh --force
 ```
 
 This will remove:

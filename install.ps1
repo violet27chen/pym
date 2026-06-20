@@ -105,6 +105,10 @@ function Install-Pvm {
             $elevateContent = (Invoke-WebRequest -Uri "$($source.Base)/windows/elevate.cmd" -UseBasicParsing).Content
             [System.IO.File]::WriteAllBytes((Join-Path $windowsDir "elevate.cmd"), [System.Text.Encoding]::ASCII.GetBytes($elevateContent))
 
+            # Download uninstall script
+            $uninstallContent = (Invoke-WebRequest -Uri "$($source.Base)/uninstall.ps1" -UseBasicParsing).Content
+            Set-Content -Path (Join-Path $InstallDir "uninstall.ps1") -Value $uninstallContent -Encoding UTF8
+
             Write-ColorOutput "  Downloaded from $($source.Name)." "Green"
             $downloaded = $true
         }
@@ -130,6 +134,10 @@ function Install-Pvm {
         
         if ($scriptDir -and (Test-Path (Join-Path $scriptDir "windows\pvm.ps1"))) {
             Copy-Item -Path (Join-Path $scriptDir "windows\*") -Destination $windowsDir -Force
+            # Copy uninstall script
+            if (Test-Path (Join-Path $scriptDir "uninstall.ps1")) {
+                Copy-Item -Path (Join-Path $scriptDir "uninstall.ps1") -Destination $InstallDir -Force
+            }
             Write-ColorOutput "Local files copied successfully." "Green"
         }
         else {
@@ -251,7 +259,7 @@ function Install-Pvm {
     Write-ColorOutput "  pvm arch              - Show system architecture" "White"
     Write-ColorOutput "  pvm --help            - Show help" "White"
     Write-ColorOutput ""
-    Write-ColorOutput "  To uninstall pvm:     powershell -ExecutionPolicy Bypass -File uninstall.ps1" "DarkGray"
+    Write-ColorOutput "  To uninstall pvm:     powershell -ExecutionPolicy Bypass -File `"$InstallDir\uninstall.ps1`"" "DarkGray"
     Write-ColorOutput ""
 
     Write-ColorOutput "Installation path: $InstallDir" "Green"

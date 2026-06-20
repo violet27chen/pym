@@ -22,6 +22,10 @@ param(
     [string]$Arch = '',
     
     [Parameter()]
+    [Alias('Home')]
+    [string]$PvmHomePath = '',
+    
+    [Parameter()]
     [switch]$Help
 )
 
@@ -36,7 +40,54 @@ $OutputEncoding = [System.Text.Encoding]::UTF8
 
 # Configuration
 $script:PVM_VERSION = "1.0.0"
-$script:PVM_HOME = if ($env:PVM_HOME) { $env:PVM_HOME } else { Join-Path $env:USERPROFILE ".pvm" }
+$script:PVMHOME_CONFIG = Join-Path $env:USERPROFILE ".pvmhome"
+
+# Determine PVM_HOME
+$script:PVM_HOME = $null
+if ($PvmHomePath) {
+    # --home parameter overrides everything
+    $script:PVM_HOME = $PvmHomePath
+}
+elseif ($env:PVM_HOME) {
+    # Environment variable takes priority
+    $script:PVM_HOME = $env:PVM_HOME
+}
+elseif (Test-Path $script:PVMHOME_CONFIG) {
+    # Read from saved config
+    $saved = Get-Content $script:PVMHOME_CONFIG -Raw | ForEach-Object { $_.Trim() }
+    if ($saved -and (Test-Path $saved)) {
+        $script:PVM_HOME = $saved
+    }
+}
+
+# If still not determined, check default or prompt
+if (-not $script:PVM_HOME) {
+    $defaultHome = Join-Path $env:USERPROFILE ".pvm"
+    if (Test-Path $defaultHome) {
+        # Default directory already exists, use it silently
+        $script:PVM_HOME = $defaultHome
+    }
+    else {
+        # First-time use: prompt interactively
+        Write-Host ""
+        Write-Host "  Welcome to pvm! First-time setup:" -ForegroundColor Cyan
+        Write-Host "  Where should pvm store its data (Python versions, config, etc.)?"
+        Write-Host ""
+        $input_path = Read-Host "  Data directory [$defaultHome]"
+        if ([string]::IsNullOrWhiteSpace($input_path)) {
+            $script:PVM_HOME = $defaultHome
+        }
+        else {
+            $script:PVM_HOME = $input_path
+        }
+        # Save choice for future use
+        Set-Content -Path $script:PVMHOME_CONFIG -Value $script:PVM_HOME -Encoding UTF8
+        Write-Host "  Saved to $($script:PVMHOME_CONFIG)" -ForegroundColor DarkGray
+        Write-Host ""
+    }
+}
+
+# Set all derived paths
 $script:PVM_VERSIONS_DIR = Join-Path $script:PVM_HOME "versions"
 $script:PVM_CURRENT_FILE = Join-Path $script:PVM_HOME "current"
 $script:PVM_SETTINGS_FILE = Join-Path $script:PVM_HOME "settings.json"
@@ -151,6 +202,7 @@ Commands:
 
 Options:
     --arch <32|64|arm64>    Architecture for install (auto-detect if not specified)
+    --home <path>           Set pvm data directory (overrides PVM_HOME env var)
 
 Mirror Presets:
     tsinghua, qinghua       Tsinghua University (China)
@@ -169,8 +221,7 @@ Configuration:
     pvm stores data in: $($script:PVM_HOME)
 
 Uninstall pvm:
-    Run uninstall.ps1 from the pvm repository to remove pvm completely.
-    See: pvm --help  ->  https://github.com/violet27chen/pym
+    Run: powershell -ExecutionPolicy Bypass -File "$($script:PVM_HOME)\uninstall.ps1"
 
 "@
     Write-Host $helpText
@@ -926,6 +977,22 @@ function Show-PvmConfig {
 }
 
 # Main execution
+# Manual --home parsing (handles: pvm install 3.12 --home D:\pvm)
+if (-not $PvmHomePath) {
+    for ($i = 0; $i -lt $args.Count; $i++) {
+        if ($args[$i] -eq '--home' -and ($i + 1) -lt $args.Count) {
+            $PvmHomePath = $args[$i + 1]
+            # Re-derive paths
+            $script:PVM_HOME = $PvmHomePath
+            $script:PVM_VERSIONS_DIR = Join-Path $script:PVM_HOME "versions"
+            $script:PVM_CURRENT_FILE = Join-Path $script:PVM_HOME "current"
+            $script:PVM_SETTINGS_FILE = Join-Path $script:PVM_HOME "settings.json"
+            $script:PVM_SYMLINK = Join-Path $script:PVM_HOME "python"
+            $script:PVM_SHIMS_DIR = Join-Path $script:PVM_HOME "shims"
+            break
+        }
+    }
+}
 Initialize-Pvm
 
 # Handle help flags

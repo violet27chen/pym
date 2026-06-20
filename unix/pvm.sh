@@ -11,8 +11,50 @@ set -e
 # Version
 PVM_VERSION="1.0.0"
 
+# Determine PVM_HOME
+PVMHOME_CONFIG="$HOME/.pvmhome"
+
+if [[ -n "$PVM_HOME_OVERRIDE" ]]; then
+    # --home parameter overrides everything
+    PVM_HOME="$PVM_HOME_OVERRIDE"
+elif [[ -n "$PVM_HOME" ]]; then
+    # Environment variable takes priority (already set)
+    :
+elif [[ -f "$PVMHOME_CONFIG" ]]; then
+    # Read from saved config
+    saved=$(cat "$PVMHOME_CONFIG" 2>/dev/null | tr -d '[:space:]')
+    if [[ -n "$saved" && -d "$saved" ]]; then
+        PVM_HOME="$saved"
+    fi
+fi
+
+# If still not determined or empty, check default or prompt
+if [[ -z "$PVM_HOME" ]]; then
+    default_home="$HOME/.pvm"
+    if [[ -d "$default_home" ]]; then
+        # Default directory already exists, use it silently
+        PVM_HOME="$default_home"
+    else
+        # First-time use: prompt interactively
+        echo ""
+        echo -e "  ${CYAN}Welcome to pvm! First-time setup:${NC}"
+        echo "  Where should pvm store its data (Python versions, config, etc.)?"
+        echo ""
+        printf "  Data directory [%s]: " "$default_home"
+        read -r input_path
+        if [[ -z "$input_path" ]]; then
+            PVM_HOME="$default_home"
+        else
+            PVM_HOME="$input_path"
+        fi
+        # Save choice for future use
+        echo "$PVM_HOME" > "$PVMHOME_CONFIG"
+        echo -e "  ${GRAY}Saved to $PVMHOME_CONFIG${NC}"
+        echo ""
+    fi
+fi
+
 # Directories
-PVM_HOME="${PVM_HOME:-$HOME/.pvm}"
 PVM_VERSIONS_DIR="$PVM_HOME/versions"
 PVM_CURRENT_FILE="$PVM_HOME/current"
 PVM_SETTINGS_FILE="$PVM_HOME/settings.json"
@@ -103,6 +145,9 @@ Commands:
     --help, -h              Show this help message
     --version, -v           Show pvm version
 
+Options:
+    --home <path>           Set pvm data directory (overrides PVM_HOME env var)
+
 Mirror Presets:
     tsinghua, qinghua       Tsinghua University (China)
     huawei                  Huawei Cloud (China)
@@ -119,8 +164,7 @@ Configuration:
     pvm stores data in: $PVM_HOME
 
 Uninstall pvm:
-    Run uninstall.sh from the pvm repository to remove pvm completely.
-    See: https://github.com/violet27chen/pym
+    Run: bash "$PVM_HOME/uninstall.sh"
 
 EOF
 }
@@ -836,6 +880,33 @@ pvm_show_config() {
 
 # Main function
 pvm() {
+    # Parse --home argument before anything else
+    local new_args=()
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --home)
+                if [[ -n "$2" ]]; then
+                    PVM_HOME_OVERRIDE="$2"
+                    PVM_HOME="$2"
+                    PVM_VERSIONS_DIR="$PVM_HOME/versions"
+                    PVM_CURRENT_FILE="$PVM_HOME/current"
+                    PVM_SETTINGS_FILE="$PVM_HOME/settings.json"
+                    PVM_SYMLINK="$PVM_HOME/python"
+                    PVM_SHIMS_DIR="$PVM_HOME/shims"
+                    shift 2
+                else
+                    echo -e "${RED}Error: --home requires a path argument${NC}"
+                    return 1
+                fi
+                ;;
+            *)
+                new_args+=("$1")
+                shift
+                ;;
+        esac
+    done
+    set -- "${new_args[@]+"${new_args[@]}"}"
+
     pvm_init
     
     local command="$1"

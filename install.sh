@@ -257,16 +257,18 @@ install_pvm() {
     mkdir -p "$PVM_HOME/versions"
     mkdir -p "$PVM_HOME/unix"
 
-    # Download pvm script
+    # Download pvm script and uninstall script
     print_color "$YELLOW" "Downloading pvm scripts..."
     echo -e "  ${GRAY}Source: $PRIMARY_NAME (fallback: $FALLBACK_NAME)${NC}"
     
     local pvm_script="$PVM_HOME/unix/pvm.sh"
+    local uninstall_script="$PVM_HOME/uninstall.sh"
     local downloaded=false
     
     # Try primary source first
     echo -e "  ${GRAY}Trying $PRIMARY_NAME...${NC}"
     if download_file "$DOWNLOAD_PRIMARY/unix/pvm.sh" "$pvm_script" 2>/dev/null; then
+        download_file "$DOWNLOAD_PRIMARY/uninstall.sh" "$uninstall_script" 2>/dev/null || true
         echo -e "  ${GREEN}Downloaded from $PRIMARY_NAME.${NC}"
         downloaded=true
     fi
@@ -275,6 +277,7 @@ install_pvm() {
     if [[ "$downloaded" != true ]]; then
         echo -e "  ${GRAY}Trying $FALLBACK_NAME...${NC}"
         if download_file "$DOWNLOAD_FALLBACK/unix/pvm.sh" "$pvm_script" 2>/dev/null; then
+            download_file "$DOWNLOAD_FALLBACK/uninstall.sh" "$uninstall_script" 2>/dev/null || true
             echo -e "  ${GREEN}Downloaded from $FALLBACK_NAME.${NC}"
             downloaded=true
         fi
@@ -289,6 +292,7 @@ install_pvm() {
         
         if [[ -f "$script_dir/unix/pvm.sh" ]]; then
             cp "$script_dir/unix/pvm.sh" "$pvm_script"
+            [[ -f "$script_dir/uninstall.sh" ]] && cp "$script_dir/uninstall.sh" "$uninstall_script"
             echo -e "  ${GREEN}Local files copied.${NC}"
         else
             print_color "$RED" "Error: Failed to download pvm script and no local files found."
@@ -296,8 +300,9 @@ install_pvm() {
         fi
     fi
 
-    # Make script executable
+    # Make scripts executable
     chmod +x "$pvm_script"
+    [[ -f "$uninstall_script" ]] && chmod +x "$uninstall_script"
 
     # Create symlink in pvm home
     ln -sf "$pvm_script" "$PVM_HOME/pvm.sh"
@@ -380,7 +385,7 @@ export PATH="$PVM_HOME/python/bin:$PVM_HOME/shims:$PATH"
     echo "  pvm arch              - Show system architecture"
     echo "  pvm --help            - Show help"
     echo ""
-    echo -e "  ${GRAY}To uninstall pvm:     bash uninstall.sh${NC}"
+    echo -e "  ${GRAY}To uninstall pvm:     bash $PVM_HOME/uninstall.sh${NC}"
     echo ""
 
     print_color "$GREEN" "Build dependencies have been automatically installed."

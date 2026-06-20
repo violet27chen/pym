@@ -101,9 +101,20 @@ pvm --help
 
 ## 配置
 
-pvm 将数据存储在 `~/.pvm` (Unix) 或 `%USERPROFILE%\.pvm` (Windows)。
+pvm 默认将数据存储在 `~/.pvm` (Unix) 或 `%USERPROFILE%\.pvm` (Windows)。
 
-可以通过设置 `PVM_HOME` 环境变量来自定义数据存储路径：
+首次使用时，pvm 会提示你选择数据存储目录。按 Enter 接受默认路径，或输入自定义路径。选择会保存到 `~/.pvmhome`，后续使用不再提示。
+
+还可以通过以下方式自定义数据目录：
+
+### `--home` 参数（单次命令覆盖）
+
+```bash
+pvm install 3.12 --home D:\pvm
+pvm use 3.12 --home /custom/path/.pvm
+```
+
+### `PVM_HOME` 环境变量
 
 ```powershell
 # Windows (PowerShell) - 永久设置
@@ -161,10 +172,10 @@ pvm config
 
 ```powershell
 # 交互式卸载（有确认提示）
-powershell -ExecutionPolicy Bypass -File uninstall.ps1
+powershell -ExecutionPolicy Bypass -File "$env:USERPROFILE\.pvm\uninstall.ps1"
 
 # 静默卸载（无确认提示）
-powershell -ExecutionPolicy Bypass -File uninstall.ps1 -Force
+powershell -ExecutionPolicy Bypass -File "$env:USERPROFILE\.pvm\uninstall.ps1" -Force
 ```
 
 将移除以下内容：
@@ -177,10 +188,10 @@ powershell -ExecutionPolicy Bypass -File uninstall.ps1 -Force
 
 ```bash
 # 交互式卸载（有确认提示）
-bash uninstall.sh
+bash ~/.pvm/uninstall.sh
 
 # 静默卸载（无确认提示）
-bash uninstall.sh --force
+bash ~/.pvm/uninstall.sh --force
 ```
 
 将移除以下内容：
