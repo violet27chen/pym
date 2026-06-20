@@ -75,6 +75,9 @@ function Install-Pvm {
     Write-ColorOutput "  Windows Installer" "Cyan"
     Write-ColorOutput "==================================`n" "Cyan"
 
+    # Common headers for all HTTP requests (avoid CDN 403)
+    $script:HttpHeaders = @{ "User-Agent" = "pvm/$($PVM_REPO -replace '.*@','')" }
+
     # Show download source priority
     $primarySource = $downloadSources[0].Name
     Write-ColorOutput "Download source: $primarySource (fallback: $($downloadSources[1].Name))" "DarkGray"
@@ -106,17 +109,17 @@ function Install-Pvm {
         if ($downloaded) { break }
         try {
             Write-ColorOutput "  Trying $($source.Name)..." "DarkGray"
-            $ps1Content = (Invoke-WebRequest -Uri "$($source.Base)/windows/pvm.ps1" -UseBasicParsing).Content
+            $ps1Content = (Invoke-WebRequest -Uri "$($source.Base)/windows/pvm.ps1" -UseBasicParsing -Headers $script:HttpHeaders).Content
             Set-Content -Path (Join-Path $windowsDir "pvm.ps1") -Value $ps1Content -Encoding UTF8
 
-            $cmdContent = (Invoke-WebRequest -Uri "$($source.Base)/windows/pvm.cmd" -UseBasicParsing).Content
+            $cmdContent = (Invoke-WebRequest -Uri "$($source.Base)/windows/pvm.cmd" -UseBasicParsing -Headers $script:HttpHeaders).Content
             [System.IO.File]::WriteAllBytes((Join-Path $windowsDir "pvm.cmd"), [System.Text.Encoding]::ASCII.GetBytes($cmdContent))
 
-            $elevateContent = (Invoke-WebRequest -Uri "$($source.Base)/windows/elevate.cmd" -UseBasicParsing).Content
+            $elevateContent = (Invoke-WebRequest -Uri "$($source.Base)/windows/elevate.cmd" -UseBasicParsing -Headers $script:HttpHeaders).Content
             [System.IO.File]::WriteAllBytes((Join-Path $windowsDir "elevate.cmd"), [System.Text.Encoding]::ASCII.GetBytes($elevateContent))
 
             # Download uninstall script
-            $uninstallContent = (Invoke-WebRequest -Uri "$($source.Base)/uninstall.ps1" -UseBasicParsing).Content
+            $uninstallContent = (Invoke-WebRequest -Uri "$($source.Base)/uninstall.ps1" -UseBasicParsing -Headers $script:HttpHeaders).Content
             Set-Content -Path (Join-Path $InstallDir "uninstall.ps1") -Value $uninstallContent -Encoding UTF8
 
             Write-ColorOutput "  Downloaded from $($source.Name)." "Green"

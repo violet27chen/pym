@@ -95,11 +95,17 @@ $script:PVM_SYMLINK = Join-Path $script:PVM_HOME "python"
 $script:PVM_SHIMS_DIR = Join-Path $script:PVM_HOME "shims"
 $script:PVM_VENVS_DIR = Join-Path $script:PVM_HOME "venvs"
 
+# HTTP User-Agent (required by jsDelivr and other CDNs)
+$script:UserAgent = "pvm/$($script:PVM_VERSION)"
+
 # Auto-create --home directory if it doesn't exist
 if (-not (Test-Path $script:PVM_HOME)) {
     New-Item -ItemType Directory -Path $script:PVM_HOME -Force | Out-Null
     Write-Host "  Created data directory: $($script:PVM_HOME)" -ForegroundColor DarkGray
 }
+
+# HTTP User-Agent (avoids CDN 403 errors)
+$script:HttpHeaders = @{ "User-Agent" = "pvm/$($script:PVM_VERSION)" }
 
 # Default Python download mirror
 $script:DEFAULT_MIRROR = "https://www.python.org/ftp/python"
@@ -169,7 +175,7 @@ function Get-AvailableVersions {
     foreach ($url in $cdnUrls) {
         try {
             $ProgressPreference = 'SilentlyContinue'
-            $response = Invoke-WebRequest -Uri $url -UseBasicParsing -TimeoutSec 10
+            $response = Invoke-WebRequest -Uri $url -UseBasicParsing -TimeoutSec 10 -Headers $script:HttpHeaders
             $ProgressPreference = 'Continue'
             $data = $response.Content | ConvertFrom-Json
             if ($data.versions -and $data.versions.Count -gt 0) {
@@ -186,7 +192,7 @@ function Get-AvailableVersions {
     Write-Host "  Trying python.org API..." -ForegroundColor DarkGray
     try {
         $ProgressPreference = 'SilentlyContinue'
-        $response = Invoke-WebRequest -Uri "https://www.python.org/api/v2/downloads/release/?is_published=true&pre_release=false" -UseBasicParsing -TimeoutSec 15
+        $response = Invoke-WebRequest -Uri "https://www.python.org/api/v2/downloads/release/?is_published=true&pre_release=false" -UseBasicParsing -TimeoutSec 15 -Headers $script:HttpHeaders
         $ProgressPreference = 'Continue'
         $releases = $response.Content | ConvertFrom-Json
         $versions = @()
@@ -227,6 +233,7 @@ function Initialize-Pvm {
     if (-not (Test-Path $script:PVM_SETTINGS_FILE)) {
         $defaultSettings = @{
             mirror = $script:DEFAULT_MIRROR
+            mirror_selected = $false
         } | ConvertTo-Json
         Set-Content -Path $script:PVM_SETTINGS_FILE -Value $defaultSettings -Encoding UTF8
     }
@@ -258,6 +265,50 @@ function Get-Mirror {
         return $settings.mirror
     }
     return $script:DEFAULT_MIRROR
+}
+
+function Prompt-MirrorSelection {
+    <#
+    .SYNOPSIS
+        On first install, prompt user to choose a download mirror. Only prompts once.
+    #>
+    $settings = Get-PvmSettings
+    # Already selected a mirror before
+    if ($settings.mirror_selected) {
+        return
+    }
+
+    Write-Host ""
+    Write-Host "  Choose a download mirror for Python installations:" -ForegroundColor Cyan
+    Write-Host ""
+    Write-Host "    1) python.org (Official)              [default]" -ForegroundColor White
+    Write-Host "    2) Tsinghua University (China)        [recommended for China]" -ForegroundColor White
+    Write-Host "    3) Huawei Cloud (China)" -ForegroundColor White
+    Write-Host "    4) Aliyun (China)" -ForegroundColor White
+    Write-Host ""
+    $choice = Read-Host "  Select mirror [1-4, default=1]"
+
+    $mirrorMap = @{
+        "1" = "default"
+        "2" = "tsinghua"
+        "3" = "huawei"
+        "4" = "aliyun"
+        ""  = "default"
+    }
+
+    $selected = $mirrorMap[$choice]
+    if (-not $selected) {
+        $selected = "default"
+    }
+
+    $mirrorUrl = $script:MIRRORS[$selected]
+    Write-Host "  Using mirror: $selected ($mirrorUrl)" -ForegroundColor Green
+
+    # Save to settings
+    $settings | Add-Member -NotePropertyName "mirror" -NotePropertyValue $mirrorUrl -Force
+    $settings | Add-Member -NotePropertyName "mirror_selected" -NotePropertyValue $true -Force
+    $settings | ConvertTo-Json | Set-Content -Path $script:PVM_SETTINGS_FILE -Encoding UTF8
+    Write-Host ""
 }
 
 function Show-Help {
@@ -475,6 +526,19 @@ function Resolve-PythonVersion {
     return $null
 }
 
+function Get-PresetName {
+    <#
+    .SYNOPSIS
+        Get a human-readable name for a mirror URL
+    #>
+    param([string]$Url)
+    if ($Url -match 'tsinghua') { return 'Tsinghua' }
+    if ($Url -match 'huaweicloud') { return 'Huawei' }
+    if ($Url -match 'aliyun') { return 'Aliyun' }
+    if ($Url -match 'python\.org') { return 'python.org' }
+    return 'Custom'
+}
+
 function Install-PythonVersion {
     <#
     .SYNOPSIS
@@ -526,19 +590,37 @@ function Install-PythonVersion {
         default { 'amd64' }
     }
     
-    # Build download URL
-    $mirror = Get-Mirror
-    $zipName = "python-$Version-embed-$archSuffix.zip"
-    $downloadUrl = "$mirror/$Version/$zipName"
-    
     $archDisplay = if ($Architecture -eq 'arm64') { 'ARM64' } else { "$Architecture-bit" }
-    
+
     Write-Host ""
     Write-Host "=============================================" -ForegroundColor Cyan
     Write-Host "  Installing Python $Version ($archDisplay)" -ForegroundColor Cyan
     Write-Host "=============================================" -ForegroundColor Cyan
     Write-Host ""
-    Write-Host "  Mirror:       $mirror" -ForegroundColor DarkGray
+
+    # Interactive mirror selection on first install
+    Prompt-MirrorSelection
+    $mirror = Get-Mirror
+    $zipName = "python-$Version-embed-$archSuffix.zip"
+
+    # Build list of mirrors to try (configured first, then fallbacks)
+    $allMirrors = @(
+        @{ Name = (Get-PresetName $mirror); Url = $mirror },
+        @{ Name = "python.org"; Url = "https://www.python.org/ftp/python" },
+        @{ Name = "Tsinghua"; Url = "https://mirrors.tuna.tsinghua.edu.cn/python" },
+        @{ Name = "Huawei"; Url = "https://mirrors.huaweicloud.com/python" },
+        @{ Name = "Aliyun"; Url = "https://mirrors.aliyun.com/python" }
+    )
+    # Deduplicate: keep first occurrence of each URL
+    $seenUrls = @()
+    $mirrorsToTry = @()
+    foreach ($m in $allMirrors) {
+        if ($seenUrls -notcontains $m.Url) {
+            $seenUrls += $m.Url
+            $mirrorsToTry += $m
+        }
+    }
+
     Write-Host "  Package:      $zipName" -ForegroundColor DarkGray
     Write-Host "  Install to:   $versionDir" -ForegroundColor DarkGray
     Write-Host ""
@@ -554,22 +636,73 @@ function Install-PythonVersion {
         }
         New-Item -ItemType Directory -Path $tempDir -Force | Out-Null
         
-        # Download Python embeddable package
+        # Download Python embeddable package with mirror fallback
         Write-Host "[1/3] Downloading Python $Version..." -ForegroundColor Yellow
-        
-        $ProgressPreference = 'SilentlyContinue'
-        try {
-            Invoke-WebRequest -Uri $downloadUrl -OutFile $zipPath -UseBasicParsing
+
+        $downloaded = $false
+        foreach ($m in $mirrorsToTry) {
+            $url = "$($m.Url)/$Version/$zipName"
+            Write-Host "  Trying $($m.Name)... ($url)" -ForegroundColor DarkGray
+
+            try {
+                # Use streaming download with progress bar
+                $ProgressPreference = 'SilentlyContinue'
+                $request = [System.Net.HttpWebRequest]::Create($url)
+                $request.UserAgent = "pvm/$($script:PVM_VERSION)"
+                $request.Timeout = 300000
+                $request.AllowAutoRedirect = $true
+                $response = $request.GetResponse()
+                $totalBytes = $response.ContentLength
+                $stream = $response.GetResponseStream()
+                $fileStream = [System.IO.File]::Create($zipPath)
+                $buffer = New-Object byte[] 8192
+                $totalRead = 0
+                $lastProgressTime = [DateTime]::Now
+
+                while ($true) {
+                    $bytesRead = $stream.Read($buffer, 0, $buffer.Length)
+                    if ($bytesRead -eq 0) { break }
+                    $fileStream.Write($buffer, 0, $bytesRead)
+                    $totalRead += $bytesRead
+
+                    # Update progress every 500ms
+                    $now = [DateTime]::Now
+                    if (($now - $lastProgressTime).TotalMilliseconds -gt 500) {
+                        $lastProgressTime = $now
+                        if ($totalBytes -gt 0) {
+                            $pct = [math]::Round(($totalRead / $totalBytes) * 100, 1)
+                            $mb = [math]::Round($totalRead / 1MB, 1)
+                            $totalMb = [math]::Round($totalBytes / 1MB, 1)
+                            Write-Host "`r      Downloading: $pct% ($mb / $totalMb MB)  " -NoNewline -ForegroundColor Cyan
+                        }
+                        else {
+                            $mb = [math]::Round($totalRead / 1MB, 1)
+                            Write-Host "`r      Downloading: $mb MB  " -NoNewline -ForegroundColor Cyan
+                        }
+                    }
+                }
+
+                $fileStream.Close()
+                $stream.Close()
+                $response.Close()
+                $ProgressPreference = 'Continue'
+
+                Write-Host "`r      Download complete!                    " -ForegroundColor Green
+                $downloaded = $true
+                break
+            }
+            catch {
+                $ProgressPreference = 'Continue'
+                Write-Host "`r      $($m.Name) failed: $($_.Exception.Message)          " -ForegroundColor DarkGray
+                if (Test-Path $zipPath) { Remove-Item -Path $zipPath -Force -ErrorAction SilentlyContinue }
+            }
         }
-        catch {
-            Write-Host "Error: Failed to download Python $Version" -ForegroundColor Red
-            Write-Host "URL: $downloadUrl" -ForegroundColor Red
+
+        if (-not $downloaded) {
+            Write-Host "Error: Failed to download Python $Version from all mirrors." -ForegroundColor Red
             Write-Host "This version may not be available for $Architecture-bit architecture." -ForegroundColor Yellow
             return $false
         }
-        $ProgressPreference = 'Continue'
-        
-        Write-Host "      Download complete!" -ForegroundColor Green
         
         # Extract
         Write-Host "[2/3] Extracting files..." -ForegroundColor Yellow
@@ -592,7 +725,7 @@ function Install-PythonVersion {
         
         try {
             $ProgressPreference = 'SilentlyContinue'
-            Invoke-WebRequest -Uri $getPipUrl -OutFile $getPipPath -UseBasicParsing
+            Invoke-WebRequest -Uri $getPipUrl -OutFile $getPipPath -UseBasicParsing -Headers $script:HttpHeaders
             $ProgressPreference = 'Continue'
             
             $pythonExe = Join-Path $versionDir "python.exe"
@@ -1031,6 +1164,7 @@ function Set-PvmConfig {
     # Save to settings
     $settings = @{
         mirror = $mirrorUrl
+        mirror_selected = $true
     }
     $settings | ConvertTo-Json | Set-Content -Path $script:PVM_SETTINGS_FILE -Encoding UTF8
     

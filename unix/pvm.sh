@@ -10,6 +10,7 @@ set -e
 
 # Version
 PVM_VERSION="1.0.0"
+PVM_USER_AGENT="pvm/$PVM_VERSION"
 
 # Determine PVM_HOME
 PVMHOME_CONFIG="$HOME/.pvmhome"
@@ -134,7 +135,7 @@ pvm_fetch_versions() {
     )
     for url in "${cdn_urls[@]}"; do
         local response
-        if response=$(curl -sf --connect-timeout 10 --max-time 15 "$url" 2>/dev/null); then
+        if response=$(curl -sf -A "$PVM_USER_AGENT" --connect-timeout 10 --max-time 15 "$url" 2>/dev/null); then
             while IFS= read -r ver; do
                 AVAILABLE_VERSIONS+=("$ver")
             done < <(echo "$response" | grep -oP '"[0-9]+\.[0-9]+\.[0-9]+"' | tr -d '"')
@@ -148,7 +149,7 @@ pvm_fetch_versions() {
     # 3. Try python.org API
     echo -e "  ${GRAY}Trying python.org API...${NC}" >&2
     local api_response
-    if api_response=$(curl -sf --connect-timeout 10 --max-time 15 \
+    if api_response=$(curl -sf -A "$PVM_USER_AGENT" --connect-timeout 10 --max-time 15 \
         "https://www.python.org/api/v2/downloads/release/?is_published=true&pre_release=false" 2>/dev/null); then
         while IFS= read -r ver; do
             AVAILABLE_VERSIONS+=("$ver")
@@ -171,7 +172,7 @@ pvm_init() {
     mkdir -p "$PVM_VENVS_DIR"
 
     if [[ ! -f "$PVM_SETTINGS_FILE" ]]; then
-        echo '{"mirror": "'"$DEFAULT_MIRROR"'"}' > "$PVM_SETTINGS_FILE"
+        echo '{"mirror": "'"$DEFAULT_MIRROR"'", "mirror_selected": false}' > "$PVM_SETTINGS_FILE"
     fi
 }
 
@@ -186,6 +187,44 @@ pvm_get_mirror() {
         fi
     fi
     echo "$DEFAULT_MIRROR"
+}
+
+# Prompt user to select a download mirror (only on first install)
+pvm_prompt_mirror() {
+    # Check if mirror was already selected
+    if [[ -f "$PVM_SETTINGS_FILE" ]]; then
+        local selected
+        selected=$(grep -o '"mirror_selected"[[:space:]]*:[[:space:]]*\(true\|false\)' "$PVM_SETTINGS_FILE" 2>/dev/null | grep -o 'true\|false')
+        if [[ "$selected" == "true" ]]; then
+            return
+        fi
+    fi
+
+    echo ""
+    echo -e "  ${CYAN}Choose a download mirror for Python installations:${NC}"
+    echo ""
+    echo -e "    1) python.org (Official)              [default]"
+    echo -e "    2) Tsinghua University (China)        [recommended for China]"
+    echo -e "    3) Huawei Cloud (China)"
+    echo -e "    4) Aliyun (China)"
+    echo ""
+    printf "  Select mirror [1-4, default=1]: "
+    read -r choice
+
+    local mirror_url
+    case "${choice:-1}" in
+        1) mirror_url="$DEFAULT_MIRROR" ;;
+        2) mirror_url="https://mirrors.tuna.tsinghua.edu.cn/python" ;;
+        3) mirror_url="https://mirrors.huaweicloud.com/python" ;;
+        4) mirror_url="https://mirrors.aliyun.com/python" ;;
+        *) mirror_url="$DEFAULT_MIRROR" ;;
+    esac
+
+    echo -e "  ${GREEN}Using mirror: $mirror_url${NC}"
+
+    # Save to settings
+    echo "{\"mirror\": \"$mirror_url\", \"mirror_selected\": true}" > "$PVM_SETTINGS_FILE"
+    echo ""
 }
 
 # Show help
@@ -549,6 +588,12 @@ pvm_install() {
     echo -e "${CYAN}  Installing Python $version${NC}"
     echo -e "${CYAN}=============================================${NC}"
     echo ""
+
+    # Interactive mirror selection on first install
+    pvm_prompt_mirror
+    local current_mirror
+    current_mirror=$(pvm_get_mirror)
+
     echo -e "  Platform:   $platform"
     echo -e "  Install to: $version_dir"
     echo ""
@@ -559,7 +604,7 @@ pvm_install() {
 
         # Get latest release tag
         local pbs_tag
-        pbs_tag=$(curl -sf --connect-timeout 10 --max-time 15 \
+        pbs_tag=$(curl -sf -A "$PVM_USER_AGENT" --connect-timeout 10 --max-time 15 \
             "https://api.github.com/repos/astral-sh/python-build-standalone/releases/latest" 2>/dev/null \
             | grep -oP '"tag_name"\s*:\s*"\K[0-9]+' | head -1)
 
@@ -583,7 +628,7 @@ pvm_install() {
 
                 echo -e "${GRAY}      URL: $download_url${NC}"
 
-                if curl -fSL --connect-timeout 10 --max-time 300 "$download_url" -o "$tar_file" 2>/dev/null; then
+                if curl -fSL -A "$PVM_USER_AGENT" --connect-timeout 10 --max-time 300 "$download_url" -o "$tar_file" --progress-bar 2>/dev/null; then
                     echo -e "${GREEN}      Download complete!${NC}"
 
                     echo -e "${YELLOW}[2/3] Extracting...${NC}"
@@ -598,7 +643,7 @@ pvm_install() {
                             # Try to bootstrap pip
                             local get_pip_url="https://bootstrap.pypa.io/get-pip.py"
                             local get_pip_path="$temp_dir/get-pip.py"
-                            if curl -sfSL "$get_pip_url" -o "$get_pip_path" 2>/dev/null; then
+                            if curl -sfSL -A "$PVM_USER_AGENT" "$get_pip_url" -o "$get_pip_path" 2>/dev/null; then
                                 "$version_dir/bin/python3" "$get_pip_path" --no-warn-script-location 2>/dev/null || true
                             fi
                         fi
@@ -626,24 +671,51 @@ pvm_install() {
     fi
 
     # --- Fallback: build from source ---
-    local mirror
-    mirror=$(pvm_get_mirror)
-
     echo -e "${YELLOW}[1/5] Downloading Python $version source...${NC}"
 
-    local source_url="$mirror/$version/Python-$version.tgz"
+    # Build list of mirrors to try (configured first, then fallbacks)
+    local -a source_mirrors=(
+        "$current_mirror"
+        "https://www.python.org/ftp/python"
+        "https://mirrors.tuna.tsinghua.edu.cn/python"
+        "https://mirrors.huaweicloud.com/python"
+        "https://mirrors.aliyun.com/python"
+    )
+    # Deduplicate
+    local -a unique_mirrors=()
+    local -A seen_mirrors=()
+    for m in "${source_mirrors[@]}"; do
+        if [[ -z "${seen_mirrors[$m]+x}" ]]; then
+            seen_mirrors["$m"]=1
+            unique_mirrors+=("$m")
+        fi
+    done
+
     local temp_dir
     temp_dir=$(mktemp -d)
     local source_file="$temp_dir/Python-$version.tgz"
-    echo -e "${GRAY}      URL: $source_url${NC}"
+    local downloaded=false
 
-    if ! curl -fSL "$source_url" -o "$source_file" 2>/dev/null; then
-        echo -e "${RED}Error: Failed to download Python $version${NC}"
-        echo "URL: $source_url"
+    for m in "${unique_mirrors[@]}"; do
+        local source_url="$m/$version/Python-$version.tgz"
+        local mirror_name
+        mirror_name=$(echo "$m" | sed -E 's|https?://([^/]+).*|\1|')
+        echo -e "${GRAY}      Trying $mirror_name... ($source_url)${NC}"
+
+        if curl -fSL -A "$PVM_USER_AGENT" --connect-timeout 10 --max-time 300 "$source_url" -o "$source_file" --progress-bar 2>/dev/null; then
+            echo -e "${GREEN}      Download complete!${NC}"
+            downloaded=true
+            break
+        else
+            echo -e "${GRAY}      $mirror_name failed${NC}"
+        fi
+    done
+
+    if [[ "$downloaded" != true ]]; then
+        echo -e "${RED}Error: Failed to download Python $version from all mirrors${NC}"
         rm -rf "$temp_dir"
         return 1
     fi
-    echo -e "${GREEN}      Download complete!${NC}"
 
     echo -e "${YELLOW}[2/5] Extracting source files...${NC}"
     tar -xzf "$source_file" -C "$temp_dir"
@@ -982,7 +1054,7 @@ pvm_config() {
     fi
     
     # Save to settings
-    echo "{\"mirror\": \"$mirror_url\"}" > "$PVM_SETTINGS_FILE"
+    echo "{\"mirror\": \"$mirror_url\", \"mirror_selected\": true}" > "$PVM_SETTINGS_FILE"
     
     echo -e "${GREEN}Python mirror configured: $mirror_url${NC}"
     
