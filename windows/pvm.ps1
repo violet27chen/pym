@@ -15,7 +15,7 @@ param(
     [string]$Command,
 
     [Parameter(Position = 1)]
-    [string]$Version,
+    [string]$Target,
 
     [Parameter()]
     [ValidateSet('32', '64', 'arm64')]
@@ -1773,10 +1773,10 @@ build-backend = "setuptools.backends._legacy:_Backend"
 if (-not $PvmHomePath) {
     $homeParsed = $false
     # Check if --home is in $Command (Position 0)
-    if ($Command -eq '--home' -and -not [string]::IsNullOrEmpty($Version)) {
-        $PvmHomePath = $Version
+    if ($Command -eq '--home' -and -not [string]::IsNullOrEmpty($Target)) {
+        $PvmHomePath = $Target
         $Command = if ($RemainingArgs.Count -gt 0) { $RemainingArgs[0] } else { '' }
-        $Version = if ($RemainingArgs.Count -gt 1) { $RemainingArgs[1] } else { '' }
+        $Target = if ($RemainingArgs.Count -gt 1) { $RemainingArgs[1] } else { '' }
         $RemainingArgs = if ($RemainingArgs.Count -gt 2) { @($RemainingArgs[2..($RemainingArgs.Count-1)]) } else { @() }
         $homeParsed = $true
     }
@@ -1823,7 +1823,7 @@ if ($Command -eq '--version' -or $Command -eq '-v') {
 # Handle commands
 switch ($Command) {
     'list' {
-        if ($Version -eq 'available') {
+        if ($Target -eq 'available') {
             Show-AvailableVersions
         }
         else {
@@ -1831,31 +1831,31 @@ switch ($Command) {
         }
     }
     'install' {
-        if ([string]::IsNullOrEmpty($Version)) {
+        if ([string]::IsNullOrEmpty($Target)) {
             Write-Host "Error: Please specify a version to install." -ForegroundColor Red
             Write-Host "Usage: pvm install <version>"
             Write-Host "Example: pvm install 3.12.4"
             exit 1
         }
-        $result = Install-PythonVersion -Version $Version -Architecture $Arch
+        $result = Install-PythonVersion -Version $Target -Architecture $Arch
         if (-not $result) { exit 1 }
     }
     'uninstall' {
-        if ([string]::IsNullOrEmpty($Version)) {
+        if ([string]::IsNullOrEmpty($Target)) {
             Write-Host "Error: Please specify a version to uninstall." -ForegroundColor Red
             Write-Host "Usage: pvm uninstall <version>"
             exit 1
         }
-        $result = Uninstall-PythonVersion -Version $Version
+        $result = Uninstall-PythonVersion -Version $Target
         if (-not $result) { exit 1 }
     }
     'use' {
-        if ([string]::IsNullOrEmpty($Version)) {
+        if ([string]::IsNullOrEmpty($Target)) {
             Write-Host "Error: Please specify a version to use." -ForegroundColor Red
             Write-Host "Usage: pvm use <version>"
             exit 1
         }
-        $result = Use-PythonVersion -Version $Version
+        $result = Use-PythonVersion -Version $Target
         if (-not $result) { exit 1 }
     }
     'current' {
@@ -1865,11 +1865,11 @@ switch ($Command) {
         Show-WhichPython
     }
     'config' {
-        Set-PvmConfig -MirrorName $Version
+        Set-PvmConfig -MirrorName $Target
     }
     'alias' {
         # pvm alias [default <version>] or pvm alias (show all)
-        if ($Version -eq 'default') {
+        if ($Target -eq 'default') {
             $target = if ($RemainingArgs.Count -gt 0) { $RemainingArgs[0] } else { '' }
             if ([string]::IsNullOrEmpty($target)) {
                 Write-Host "Usage: pvm alias default <version>" -ForegroundColor Yellow
@@ -1889,7 +1889,7 @@ switch ($Command) {
         }
     }
     'unalias' {
-        if ($Version -eq 'default') {
+        if ($Target -eq 'default') {
             Remove-DefaultVersion
             Write-Host "Default version removed." -ForegroundColor Green
         }
@@ -1905,12 +1905,12 @@ switch ($Command) {
         $subCmd = ''
         $subName = ''
         $pyVer = ''
-        if ($Version -in $validSubCmds) {
-            $subCmd = $Version
+        if ($Target -in $validSubCmds) {
+            $subCmd = $Target
             $subName = if ($RemainingArgs.Count -gt 0) { $RemainingArgs[0] } else { '' }
         } else {
             $subCmd = ''
-            $subName = $Version
+            $subName = $Target
         }
         # Parse --python flag from RemainingArgs
         for ($i = 0; $i -lt $RemainingArgs.Count; $i++) {
@@ -1922,7 +1922,7 @@ switch ($Command) {
         Invoke-PvmVenv -SubCommand $subCmd -Name $subName -PythonVersion $pyVer
     }
     'pip' {
-        $subCmd = $Version
+        $subCmd = $Target
         $remainingArgs = $RemainingArgs
         Invoke-PvmPip -SubCommand $subCmd -ExtraArgs $remainingArgs
     }
@@ -1931,24 +1931,24 @@ switch ($Command) {
     }
     'add' {
         $remainingArgs = $RemainingArgs
-        if ([string]::IsNullOrEmpty($Version) -and $remainingArgs.Count -gt 0) {
-            $Version = $remainingArgs[0]
+        if ([string]::IsNullOrEmpty($Target) -and $remainingArgs.Count -gt 0) {
+            $Target = $remainingArgs[0]
             $remainingArgs = $remainingArgs[1..($remainingArgs.Count - 1)]
         }
-        $pkgArgs = @($Version) + $remainingArgs | Where-Object { $_ }
+        $pkgArgs = @($Target) + $remainingArgs | Where-Object { $_ }
         Invoke-PvmProject -SubCommand "add" -ExtraArgs $pkgArgs
     }
     'remove' {
         $remainingArgs = $RemainingArgs
-        if ([string]::IsNullOrEmpty($Version) -and $remainingArgs.Count -gt 0) {
-            $Version = $remainingArgs[0]
+        if ([string]::IsNullOrEmpty($Target) -and $remainingArgs.Count -gt 0) {
+            $Target = $remainingArgs[0]
             $remainingArgs = $remainingArgs[1..($remainingArgs.Count - 1)]
         }
-        $pkgArgs = @($Version) + $remainingArgs | Where-Object { $_ }
+        $pkgArgs = @($Target) + $remainingArgs | Where-Object { $_ }
         Invoke-PvmProject -SubCommand "remove" -ExtraArgs $pkgArgs
     }
     'run' {
-        $remainingArgs = @($Version) + $RemainingArgs | Where-Object { $_ }
+        $remainingArgs = @($Target) + $RemainingArgs | Where-Object { $_ }
         Invoke-PvmProject -SubCommand "run" -ExtraArgs $remainingArgs
     }
     'export' {
@@ -1963,15 +1963,15 @@ switch ($Command) {
             Write-Host "Error: pip not found for current Python version." -ForegroundColor Red
             exit 1
         }
-        $outfile = if (-not [string]::IsNullOrEmpty($Version)) { $Version } else { "requirements.txt" }
+        $outfile = if (-not [string]::IsNullOrEmpty($Target)) { $Target } else { "requirements.txt" }
         & $pipExe freeze | Out-File -FilePath $outfile -Encoding UTF8
         Write-Host "Exported requirements to $outfile" -ForegroundColor Green
     }
     'import' {
         # Import packages from requirements.txt
-        if ([string]::IsNullOrEmpty($Version)) { $Version = "requirements.txt" }
-        if (-not (Test-Path $Version)) {
-            Write-Host "Error: File '$Version' not found." -ForegroundColor Red
+        if ([string]::IsNullOrEmpty($Target)) { $Target = "requirements.txt" }
+        if (-not (Test-Path $Target)) {
+            Write-Host "Error: File '$Target' not found." -ForegroundColor Red
             exit 1
         }
         $pythonExe = Get-CurrentPythonExe
@@ -1984,12 +1984,12 @@ switch ($Command) {
             Write-Host "Error: pip not found for current Python version." -ForegroundColor Red
             exit 1
         }
-        Write-Host "Installing packages from $Version..." -ForegroundColor Cyan
-        & $pipExe install -r $Version
+        Write-Host "Installing packages from $Target..." -ForegroundColor Cyan
+        & $pipExe install -r $Target
         Write-Host "Done." -ForegroundColor Green
     }
     'cache' {
-        if ($Version -eq 'clean') {
+        if ($Target -eq 'clean') {
             $pythonExe = Get-CurrentPythonExe
             if ($pythonExe) {
                 $pipExe = Join-Path (Split-Path $pythonExe) "Scripts\pip.exe"
@@ -2011,7 +2011,7 @@ switch ($Command) {
     }
     'pin' {
         # Pin Python version for current directory (.python-version file)
-        if ([string]::IsNullOrEmpty($Version)) {
+        if ([string]::IsNullOrEmpty($Target)) {
             # Show current pinned version
             $localVersionFile = Join-Path (Get-Location) ".python-version"
             if (Test-Path $localVersionFile) {
@@ -2024,9 +2024,9 @@ switch ($Command) {
             }
             return
         }
-        $resolved = Resolve-PythonVersion -Version $Version
+        $resolved = Resolve-PythonVersion -Version $Target
         if (-not $resolved) {
-            Write-Host "Error: Version '$Version' not found." -ForegroundColor Red
+            Write-Host "Error: Version '$Target' not found." -ForegroundColor Red
             return
         }
         $localVersionFile = Join-Path (Get-Location) ".python-version"
@@ -2071,7 +2071,7 @@ switch ($Command) {
             Write-Host "Error: pip not found." -ForegroundColor Red
             exit 1
         }
-        $outfile = if (-not [string]::IsNullOrEmpty($Version)) { $Version } else { "requirements.lock" }
+        $outfile = if (-not [string]::IsNullOrEmpty($Target)) { $Target } else { "requirements.lock" }
         & $pipExe freeze | Out-File -FilePath $outfile -Encoding UTF8
         Write-Host "Locked dependencies to $outfile" -ForegroundColor Green
         $count = (Get-Content $outfile | Measure-Object -Line).Lines
@@ -2079,7 +2079,7 @@ switch ($Command) {
     }
     'sync' {
         # Sync environment from lock file or requirements.txt
-        $reqfile = if (-not [string]::IsNullOrEmpty($Version)) { $Version } else { "requirements.lock" }
+        $reqfile = if (-not [string]::IsNullOrEmpty($Target)) { $Target } else { "requirements.lock" }
         if (-not (Test-Path $reqfile)) {
             $reqfile = "requirements.txt"
             if (-not (Test-Path $reqfile)) {
@@ -2103,7 +2103,7 @@ switch ($Command) {
     }
     'tool' {
         # Tool management (like uvx/pipx)
-        $toolSubCmd = $Version
+        $toolSubCmd = $Target
         $toolArgs = $RemainingArgs
         switch ($toolSubCmd) {
             'install' {

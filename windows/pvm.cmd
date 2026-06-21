@@ -18,6 +18,6 @@ if %errorlevel% neq 0 (
 )
 
 rem Execute the PowerShell script with proper argument handling
-rem Use -Command to avoid PowerShell interpreting script args as its own parameters
+rem Use -Command mode; for pvm run with -c flag, use: pvm run python -- -c "code"
 powershell -NoProfile -ExecutionPolicy Bypass -Command "& '%PVM_DIR%pvm.ps1' %*"
 exit /b %errorlevel%
