@@ -253,7 +253,7 @@ Commands:
     unalias default         Remove default version
     alias                   Show all aliases
 
-    venv <name>             Create a virtual environment
+    venv <name>             Create a virtual environment (auto-activates)
     venv list               List all virtual environments
     venv remove <name>      Remove a virtual environment
     venv activate <name>    Show activation command
@@ -262,6 +262,11 @@ Commands:
     pip uninstall <pkg>     Uninstall a package
     pip list                List installed packages
     pip upgrade <pkg>       Upgrade a package
+    pip freeze              List installed packages (requirements format)
+
+    export [file]           Export requirements to file (default: requirements.txt)
+    import [file]           Install packages from file (default: requirements.txt)
+    cache clean             Clean pip and pvm caches
 
     init                    Initialize a new project (pyproject.toml)
     add <pkg>               Add a dependency
@@ -1220,7 +1225,15 @@ pvm_venv() {
             "$python_exe" -m venv "$venv_path" 2>/dev/null
             if [[ -d "$venv_path" ]]; then
                 echo -e "${GREEN}Created: $venv_path${NC}"
-                echo -e "${GRAY}Activate: source $venv_path/bin/activate${NC}"
+                echo ""
+                echo -e "${YELLOW}To activate this virtual environment, run:${NC}"
+                echo -e "${CYAN}  source $venv_path/bin/activate${NC}"
+                echo ""
+                # Auto-activate in current session
+                if [[ -f "$venv_path/bin/activate" ]]; then
+                    source "$venv_path/bin/activate"
+                    echo -e "${GREEN}  Virtual environment '$name' is now active.${NC}"
+                fi
             else
                 echo -e "${RED}Error: Failed to create virtual environment.${NC}"
             fi
@@ -1312,8 +1325,11 @@ pvm_pip() {
             fi
             "$pip_exe" install --upgrade "$@"
             ;;
+        freeze)
+            "$pip_exe" freeze
+            ;;
         *)
-            echo -e "${YELLOW}Usage: pvm pip <install|uninstall|list|upgrade> [package]${NC}"
+            echo -e "${YELLOW}Usage: pvm pip <install|uninstall|list|upgrade|freeze> [package]${NC}"
             ;;
     esac
 }
@@ -1537,17 +1553,52 @@ pvm() {
             shift
             pvm_pip "$@"
             ;;
-        init)
-            pvm_project init
+        export)
+            # Export installed packages to requirements file
+            local pip_exe="$PVM_HOME/versions/$(pvm_get_current)/bin/pip3"
+            if [[ ! -x "$pip_exe" ]]; then
+                echo -e "${RED}Error: No Python version active. Run: pvm use <version>${NC}"
+                return 1
+            fi
+            local outfile="${1:-requirements.txt}"
+            "$pip_exe" freeze > "$outfile"
+            echo -e "${GREEN}Exported requirements to $outfile${NC}"
             ;;
-        add)
-            pvm_project add "$1" "$@"
+        import)
+            # Import packages from requirements file
+            local reqfile="${1:-requirements.txt}"
+            if [[ ! -f "$reqfile" ]]; then
+                echo -e "${RED}Error: File '$reqfile' not found.${NC}"
+                return 1
+            fi
+            local pip_exe="$PVM_HOME/versions/$(pvm_get_current)/bin/pip3"
+            if [[ ! -x "$pip_exe" ]]; then
+                echo -e "${RED}Error: No Python version active. Run: pvm use <version>${NC}"
+                return 1
+            fi
+            echo -e "${CYAN}Installing packages from $reqfile...${NC}"
+            "$pip_exe" install -r "$reqfile"
+            echo -e "${GREEN}Done.${NC}"
             ;;
-        remove)
-            pvm_project remove "$1" "$@"
-            ;;
-        run)
-            pvm_project run "$1" "$@"
+        cache)
+            if [[ "$1" == "clean" ]]; then
+                local current
+                current=$(pvm_get_current)
+                if [[ -n "$current" ]]; then
+                    local pip_exe="$PVM_HOME/versions/$current/bin/pip3"
+                    if [[ -x "$pip_exe" ]]; then
+                        "$pip_exe" cache purge 2>/dev/null
+                        echo -e "${GREEN}pip cache cleaned.${NC}"
+                    fi
+                fi
+                local cache_file="$PVM_HOME/versions_cache.json"
+                if [[ -f "$cache_file" ]]; then
+                    rm -f "$cache_file"
+                    echo -e "${GREEN}Version cache cleaned.${NC}"
+                fi
+            else
+                echo -e "${YELLOW}Usage: pvm cache clean${NC}"
+            fi
             ;;
         --help|-h|help)
             pvm_help

@@ -351,7 +351,7 @@ Commands:
     unalias default         Remove default version
     alias                   Show all aliases
 
-    venv <name>             Create a virtual environment
+    venv <name>             Create a virtual environment (auto-activates)
     venv list               List all virtual environments
     venv remove <name>      Remove a virtual environment
     venv activate <name>    Show activation command
@@ -360,6 +360,11 @@ Commands:
     pip uninstall <pkg>     Uninstall a package
     pip list                List installed packages
     pip upgrade <pkg>       Upgrade a package
+    pip freeze              List installed packages (requirements format)
+
+    export [file]           Export requirements to file (default: requirements.txt)
+    import [file]           Install packages from file (default: requirements.txt)
+    cache clean             Clean pip and pvm caches
 
     init                    Initialize a new project (pyproject.toml)
     add <pkg>               Add a dependency
@@ -1466,7 +1471,20 @@ function Invoke-PvmVenv {
             }
             if (Test-Path $venvPath) {
                 Write-Host "Created: $venvPath" -ForegroundColor Green
-                Write-Host "Activate: & `"$venvPath\Scripts\Activate.ps1`"" -ForegroundColor DarkGray
+                Write-Host ""
+                Write-Host "To activate this virtual environment, run:" -ForegroundColor Yellow
+                Write-Host "  & `"$venvPath\Scripts\Activate.ps1`"" -ForegroundColor Cyan
+                Write-Host ""
+                # Auto-activate in current session if possible
+                $activateScript = Join-Path $venvPath "Scripts\Activate.ps1"
+                if (Test-Path $activateScript) {
+                    try {
+                        & $activateScript
+                        Write-Host "  Virtual environment '$Name' is now active." -ForegroundColor Green
+                    } catch {
+                        Write-Host "  (Auto-activation not available in this shell)" -ForegroundColor DarkGray
+                    }
+                }
             }
             else {
                 Write-Host "Error: Failed to create virtual environment." -ForegroundColor Red
@@ -1558,8 +1576,11 @@ function Invoke-PvmPip {
             }
             & $pipExe install --upgrade @ExtraArgs
         }
+        'freeze' {
+            & $pipExe freeze
+        }
         default {
-            Write-Host "Usage: pvm pip <install|uninstall|list|upgrade> [package]" -ForegroundColor Yellow
+            Write-Host "Usage: pvm pip <install|uninstall|list|upgrade|freeze> [package]" -ForegroundColor Yellow
         }
     }
 }
@@ -1879,6 +1900,64 @@ switch ($Command) {
     'run' {
         $remainingArgs = @($Version) + $RemainingArgs | Where-Object { $_ }
         Invoke-PvmProject -SubCommand "run" -ExtraArgs $remainingArgs
+    }
+    'export' {
+        # Export installed packages to requirements.txt
+        $pythonExe = Get-CurrentPythonExe
+        if (-not $pythonExe) {
+            Write-Host "Error: No Python version active. Run: pvm use <version>" -ForegroundColor Red
+            exit 1
+        }
+        $pipExe = Join-Path (Split-Path $pythonExe) "Scripts\pip.exe"
+        if (-not (Test-Path $pipExe)) {
+            Write-Host "Error: pip not found for current Python version." -ForegroundColor Red
+            exit 1
+        }
+        $outfile = if (-not [string]::IsNullOrEmpty($Version)) { $Version } else { "requirements.txt" }
+        & $pipExe freeze | Out-File -FilePath $outfile -Encoding UTF8
+        Write-Host "Exported requirements to $outfile" -ForegroundColor Green
+    }
+    'import' {
+        # Import packages from requirements.txt
+        if ([string]::IsNullOrEmpty($Version)) { $Version = "requirements.txt" }
+        if (-not (Test-Path $Version)) {
+            Write-Host "Error: File '$Version' not found." -ForegroundColor Red
+            exit 1
+        }
+        $pythonExe = Get-CurrentPythonExe
+        if (-not $pythonExe) {
+            Write-Host "Error: No Python version active. Run: pvm use <version>" -ForegroundColor Red
+            exit 1
+        }
+        $pipExe = Join-Path (Split-Path $pythonExe) "Scripts\pip.exe"
+        if (-not (Test-Path $pipExe)) {
+            Write-Host "Error: pip not found for current Python version." -ForegroundColor Red
+            exit 1
+        }
+        Write-Host "Installing packages from $Version..." -ForegroundColor Cyan
+        & $pipExe install -r $Version
+        Write-Host "Done." -ForegroundColor Green
+    }
+    'cache' {
+        if ($Version -eq 'clean') {
+            $pythonExe = Get-CurrentPythonExe
+            if ($pythonExe) {
+                $pipExe = Join-Path (Split-Path $pythonExe) "Scripts\pip.exe"
+                if (Test-Path $pipExe) {
+                    & $pipExe cache purge 2>&1
+                    Write-Host "pip cache cleaned." -ForegroundColor Green
+                }
+            }
+            # Also clean pvm temp cache
+            $cacheFile = Join-Path $script:PVM_HOME "versions_cache.json"
+            if (Test-Path $cacheFile) {
+                Remove-Item $cacheFile -Force
+                Write-Host "Version cache cleaned." -ForegroundColor Green
+            }
+        }
+        else {
+            Write-Host "Usage: pvm cache clean" -ForegroundColor Yellow
+        }
     }
     default {
         if ([string]::IsNullOrEmpty($Command)) {
