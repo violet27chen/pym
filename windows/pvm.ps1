@@ -346,12 +346,14 @@ Commands:
     which                   Show the path to the current Python executable
     config [mirror]         Configure mirror (show current if no argument)
     arch                    Show detected system architecture
+    pin [version]           Pin Python version for current directory (.python-version)
 
     alias default <ver>     Set default version (auto-used on new terminal)
     unalias default         Remove default version
     alias                   Show all aliases
 
     venv <name>             Create a virtual environment (auto-activates)
+    venv <name> --python <ver>  Create venv with specific Python version
     venv list               List all virtual environments
     venv remove <name>      Remove a virtual environment
     venv activate <name>    Show activation command
@@ -361,15 +363,26 @@ Commands:
     pip list                List installed packages
     pip upgrade <pkg>       Upgrade a package
     pip freeze              List installed packages (requirements format)
+    pip check               Check for dependency conflicts
 
     export [file]           Export requirements to file (default: requirements.txt)
     import [file]           Install packages from file (default: requirements.txt)
+    lock [file]             Lock dependencies (default: requirements.lock)
+    sync [file]             Sync environment from lock file
+    tree                    Show dependency tree
     cache clean             Clean pip and pvm caches
+
+    tool install <pkg>      Install a tool (like pipx)
+    tool run <tool> [args]  Run an installed tool
+    tool list               List installed tools
+    tool uninstall <tool>   Uninstall a tool
 
     init                    Initialize a new project (pyproject.toml)
     add <pkg>               Add a dependency
     remove <pkg>            Remove a dependency
     run <cmd>               Run a command in project venv
+    build                   Build package (sdist + wheel)
+    publish                 Publish package to PyPI
 
     --help, -h              Show this help message
     --version, -v           Show pvm version
@@ -424,10 +437,18 @@ function Get-InstalledVersions {
 function Get-CurrentVersion {
     <#
     .SYNOPSIS
-        Get the currently active Python version (current > default > none)
+        Get the currently active Python version (current > .python-version > default > none)
     #>
     if (Test-Path $script:PVM_CURRENT_FILE) {
         return (Get-Content $script:PVM_CURRENT_FILE -Raw).Trim()
+    }
+    # Check for .python-version file in current directory
+    $localVersionFile = Join-Path (Get-Location) ".python-version"
+    if (Test-Path $localVersionFile) {
+        $localVer = (Get-Content $localVersionFile -Raw).Trim()
+        if (-not [string]::IsNullOrEmpty($localVer)) {
+            return $localVer
+        }
     }
     # Fall back to default version if no current version is set
     if (Test-Path $script:PVM_DEFAULT_FILE) {
@@ -1427,7 +1448,7 @@ function Get-CurrentPythonExe {
 }
 
 function Invoke-PvmVenv {
-    param([string]$SubCommand, [string]$Name)
+    param([string]$SubCommand, [string]$Name, [string]$PythonVersion)
 
     $venvsDir = $script:PVM_VENVS_DIR
     if (-not (Test-Path $venvsDir)) {
@@ -1438,13 +1459,30 @@ function Invoke-PvmVenv {
         { $_ -eq '' -or $_ -eq 'create' } {
             if ([string]::IsNullOrEmpty($Name)) {
                 Write-Host "Error: Please specify a venv name." -ForegroundColor Red
-                Write-Host "Usage: pvm venv <name>"
+                Write-Host "Usage: pvm venv <name> [--python <version>]"
                 return
             }
-            $pythonExe = Get-CurrentPythonExe
-            if (-not $pythonExe) {
-                Write-Host "Error: No Python version active. Run: pvm use <version>" -ForegroundColor Red
-                return
+            # Use specified Python version or current
+            $pythonExe = $null
+            if (-not [string]::IsNullOrEmpty($PythonVersion)) {
+                $resolved = Resolve-PythonVersion -Version $PythonVersion
+                if ($resolved) {
+                    $pythonExe = Join-Path $script:PVM_VERSIONS_DIR "$resolved\python.exe"
+                    if (-not (Test-Path $pythonExe)) {
+                        $pythonExe = Join-Path $script:PVM_VERSIONS_DIR "$resolved\Scripts\python.exe"
+                    }
+                }
+                if (-not $pythonExe -or -not (Test-Path $pythonExe)) {
+                    Write-Host "Error: Python $PythonVersion not installed. Run: pvm install $PythonVersion" -ForegroundColor Red
+                    return
+                }
+                Write-Host "Using Python $PythonVersion" -ForegroundColor DarkGray
+            } else {
+                $pythonExe = Get-CurrentPythonExe
+                if (-not $pythonExe) {
+                    Write-Host "Error: No Python version active. Run: pvm use <version>" -ForegroundColor Red
+                    return
+                }
             }
             $venvPath = Join-Path $venvsDir $Name
             if (Test-Path $venvPath) {
@@ -1579,8 +1617,11 @@ function Invoke-PvmPip {
         'freeze' {
             & $pipExe freeze
         }
+        'check' {
+            & $pipExe check
+        }
         default {
-            Write-Host "Usage: pvm pip <install|uninstall|list|upgrade|freeze> [package]" -ForegroundColor Yellow
+            Write-Host "Usage: pvm pip <install|uninstall|list|upgrade|freeze|check> [package]" -ForegroundColor Yellow
         }
     }
 }
@@ -1859,17 +1900,26 @@ switch ($Command) {
     'arch' { Show-PlatformInfo }
     'platform' { Show-PlatformInfo }
     'venv' {
-        # Support: pvm venv <name> | pvm venv <create|list|remove|activate> [name]
+        # Support: pvm venv <name> [--python <ver>] | pvm venv <create|list|remove|activate> [name] [--python <ver>]
         $validSubCmds = @('create', 'list', 'remove', 'activate')
+        $subCmd = ''
+        $subName = ''
+        $pyVer = ''
         if ($Version -in $validSubCmds) {
             $subCmd = $Version
             $subName = if ($RemainingArgs.Count -gt 0) { $RemainingArgs[0] } else { '' }
-        }
-        else {
+        } else {
             $subCmd = ''
             $subName = $Version
         }
-        Invoke-PvmVenv -SubCommand $subCmd -Name $subName
+        # Parse --python flag from RemainingArgs
+        for ($i = 0; $i -lt $RemainingArgs.Count; $i++) {
+            if ($RemainingArgs[$i] -eq '--python' -and ($i + 1) -lt $RemainingArgs.Count) {
+                $pyVer = $RemainingArgs[$i + 1]
+                break
+            }
+        }
+        Invoke-PvmVenv -SubCommand $subCmd -Name $subName -PythonVersion $pyVer
     }
     'pip' {
         $subCmd = $Version
@@ -1957,6 +2007,213 @@ switch ($Command) {
         }
         else {
             Write-Host "Usage: pvm cache clean" -ForegroundColor Yellow
+        }
+    }
+    'pin' {
+        # Pin Python version for current directory (.python-version file)
+        if ([string]::IsNullOrEmpty($Version)) {
+            # Show current pinned version
+            $localVersionFile = Join-Path (Get-Location) ".python-version"
+            if (Test-Path $localVersionFile) {
+                $pinnedVer = (Get-Content $localVersionFile -Raw).Trim()
+                Write-Host "Pinned version: $pinnedVer" -ForegroundColor Green
+                Write-Host "File: $localVersionFile" -ForegroundColor DarkGray
+            } else {
+                Write-Host "No version pinned in this directory." -ForegroundColor Yellow
+                Write-Host "Usage: pvm pin <version>" -ForegroundColor Yellow
+            }
+            return
+        }
+        $resolved = Resolve-PythonVersion -Version $Version
+        if (-not $resolved) {
+            Write-Host "Error: Version '$Version' not found." -ForegroundColor Red
+            return
+        }
+        $localVersionFile = Join-Path (Get-Location) ".python-version"
+        Set-Content -Path $localVersionFile -Value $resolved -Encoding UTF8 -NoNewline
+        Write-Host "Pinned Python $resolved for this directory" -ForegroundColor Green
+        Write-Host "File: $localVersionFile" -ForegroundColor DarkGray
+    }
+    'tree' {
+        # Show dependency tree
+        $pythonExe = Get-CurrentPythonExe
+        if (-not $pythonExe) {
+            Write-Host "Error: No Python version active. Run: pvm use <version>" -ForegroundColor Red
+            exit 1
+        }
+        $pipExe = Join-Path (Split-Path $pythonExe) "Scripts\pip.exe"
+        if (-not (Test-Path $pipExe)) {
+            Write-Host "Error: pip not found." -ForegroundColor Red
+            exit 1
+        }
+        # Try pipdeptree first, fallback to pip list
+        $pipdeptreeExe = Join-Path (Split-Path $pipExe) "Scripts\pipdeptree.exe"
+        if (-not (Test-Path $pipdeptreeExe)) {
+            & $pipExe install pipdeptree --no-warn-script-location 2>&1 | Out-Null
+            $pipdeptreeExe = Join-Path (Split-Path $pipExe) "Scripts\pipdeptree.exe"
+        }
+        if (Test-Path $pipdeptreeExe) {
+            & $pipdeptreeExe
+        } else {
+            Write-Host "Dependency tree (flat list):" -ForegroundColor Cyan
+            & $pipExe list --format=columns
+        }
+    }
+    'lock' {
+        # Lock dependencies to requirements.txt with exact versions
+        $pythonExe = Get-CurrentPythonExe
+        if (-not $pythonExe) {
+            Write-Host "Error: No Python version active. Run: pvm use <version>" -ForegroundColor Red
+            exit 1
+        }
+        $pipExe = Join-Path (Split-Path $pythonExe) "Scripts\pip.exe"
+        if (-not (Test-Path $pipExe)) {
+            Write-Host "Error: pip not found." -ForegroundColor Red
+            exit 1
+        }
+        $outfile = if (-not [string]::IsNullOrEmpty($Version)) { $Version } else { "requirements.lock" }
+        & $pipExe freeze | Out-File -FilePath $outfile -Encoding UTF8
+        Write-Host "Locked dependencies to $outfile" -ForegroundColor Green
+        $count = (Get-Content $outfile | Measure-Object -Line).Lines
+        Write-Host "  $count packages locked" -ForegroundColor DarkGray
+    }
+    'sync' {
+        # Sync environment from lock file or requirements.txt
+        $reqfile = if (-not [string]::IsNullOrEmpty($Version)) { $Version } else { "requirements.lock" }
+        if (-not (Test-Path $reqfile)) {
+            $reqfile = "requirements.txt"
+            if (-not (Test-Path $reqfile)) {
+                Write-Host "Error: No requirements.lock or requirements.txt found." -ForegroundColor Red
+                exit 1
+            }
+        }
+        $pythonExe = Get-CurrentPythonExe
+        if (-not $pythonExe) {
+            Write-Host "Error: No Python version active. Run: pvm use <version>" -ForegroundColor Red
+            exit 1
+        }
+        $pipExe = Join-Path (Split-Path $pythonExe) "Scripts\pip.exe"
+        if (-not (Test-Path $pipExe)) {
+            Write-Host "Error: pip not found." -ForegroundColor Red
+            exit 1
+        }
+        Write-Host "Syncing environment from $reqfile..." -ForegroundColor Cyan
+        & $pipExe install -r $reqfile
+        Write-Host "Environment synced." -ForegroundColor Green
+    }
+    'tool' {
+        # Tool management (like uvx/pipx)
+        $toolSubCmd = $Version
+        $toolArgs = $RemainingArgs
+        switch ($toolSubCmd) {
+            'install' {
+                if ($toolArgs.Count -eq 0) {
+                    Write-Host "Error: Please specify a tool to install." -ForegroundColor Red
+                    return
+                }
+                $pythonExe = Get-CurrentPythonExe
+                if (-not $pythonExe) {
+                    Write-Host "Error: No Python version active. Run: pvm use <version>" -ForegroundColor Red
+                    return
+                }
+                $pipExe = Join-Path (Split-Path $pythonExe) "Scripts\pip.exe"
+                $toolDir = Join-Path $script:PVM_HOME "tools"
+                if (-not (Test-Path $toolDir)) { New-Item -ItemType Directory -Path $toolDir -Force | Out-Null }
+                $toolName = $toolArgs[0] -replace '[\[].*[\]]', ''
+                $toolVenv = Join-Path $toolDir $toolName
+                if (-not (Test-Path $toolVenv)) {
+                    & $pythonExe -m venv $toolVenv 2>&1 | Out-Null
+                }
+                $toolPip = Join-Path $toolVenv "Scripts\pip.exe"
+                & $toolPip install @toolArgs
+                Write-Host "Installed tool: $toolName" -ForegroundColor Green
+                Write-Host "Run with: pvm tool run $toolName" -ForegroundColor DarkGray
+            }
+            'run' {
+                if ($toolArgs.Count -eq 0) {
+                    Write-Host "Error: Please specify a tool to run." -ForegroundColor Red
+                    return
+                }
+                $toolDir = Join-Path $script:PVM_HOME "tools"
+                $toolName = $toolArgs[0]
+                $toolExe = Join-Path $toolDir "$toolName\Scripts\$toolName.exe"
+                if (-not (Test-Path $toolExe)) {
+                    # Try python -m
+                    $toolExe = Join-Path $toolDir "$toolName\Scripts\python.exe"
+                    $toolModule = $toolName
+                    if (Test-Path $toolExe) {
+                        & $toolExe -m $toolModule @($toolArgs[1..($toolArgs.Count-1)])
+                        return
+                    }
+                    Write-Host "Error: Tool '$toolName' not found. Install with: pvm tool install $toolName" -ForegroundColor Red
+                    return
+                }
+                & $toolExe @($toolArgs[1..($toolArgs.Count-1)])
+            }
+            'list' {
+                $toolDir = Join-Path $script:PVM_HOME "tools"
+                if (-not (Test-Path $toolDir) -or (Get-ChildItem -Path $toolDir -Directory -ErrorAction SilentlyContinue).Count -eq 0) {
+                    Write-Host "No tools installed." -ForegroundColor Yellow
+                    return
+                }
+                Write-Host "`nInstalled tools:" -ForegroundColor Cyan
+                Get-ChildItem -Path $toolDir -Directory | ForEach-Object {
+                    Write-Host "  $($_.Name)" -ForegroundColor White
+                }
+                Write-Host ""
+            }
+            'uninstall' {
+                if ($toolArgs.Count -eq 0) {
+                    Write-Host "Error: Please specify a tool to uninstall." -ForegroundColor Red
+                    return
+                }
+                $toolDir = Join-Path $script:PVM_HOME "tools"
+                $toolName = $toolArgs[0]
+                $toolPath = Join-Path $toolDir $toolName
+                if (Test-Path $toolPath) {
+                    Remove-Item -Path $toolPath -Recurse -Force
+                    Write-Host "Uninstalled tool: $toolName" -ForegroundColor Green
+                } else {
+                    Write-Host "Error: Tool '$toolName' not found." -ForegroundColor Red
+                }
+            }
+            default {
+                Write-Host "Usage: pvm tool <install|run|list|uninstall> [args]" -ForegroundColor Yellow
+            }
+        }
+    }
+    'build' {
+        # Build package
+        $pythonExe = Get-CurrentPythonExe
+        if (-not $pythonExe) {
+            Write-Host "Error: No Python version active. Run: pvm use <version>" -ForegroundColor Red
+            exit 1
+        }
+        $pipExe = Join-Path (Split-Path $pythonExe) "Scripts\pip.exe"
+        & $pipExe install build --no-warn-script-location 2>&1 | Out-Null
+        $buildExe = Join-Path (Split-Path $pythonExe) "Scripts\pyproject-build.exe"
+        if (-not (Test-Path $buildExe)) {
+            $buildExe = Join-Path (Split-Path $pythonExe) "Scripts\python.exe"
+            & $buildExe -m build
+        } else {
+            & $buildExe
+        }
+        Write-Host "Build complete. Check dist/ folder." -ForegroundColor Green
+    }
+    'publish' {
+        # Publish package to PyPI
+        $pythonExe = Get-CurrentPythonExe
+        if (-not $pythonExe) {
+            Write-Host "Error: No Python version active. Run: pvm use <version>" -ForegroundColor Red
+            exit 1
+        }
+        $pipExe = Join-Path (Split-Path $pythonExe) "Scripts\pip.exe"
+        & $pipExe install twine --no-warn-script-location 2>&1 | Out-Null
+        $twineExe = Join-Path (Split-Path $pythonExe) "Scripts\twine.exe"
+        if (Test-Path $twineExe) {
+            & $twineExe upload dist/*
+        } else {
+            Write-Host "Error: twine not found." -ForegroundColor Red
         }
     }
     default {

@@ -248,12 +248,14 @@ Commands:
     which                   Show the path to the current Python executable
     config [mirror]         Configure mirror (show current if no argument)
     arch                    Show detected system architecture
+    pin [version]           Pin Python version for current directory (.python-version)
 
     alias default <ver>     Set default version (auto-used on new terminal)
     unalias default         Remove default version
     alias                   Show all aliases
 
     venv <name>             Create a virtual environment (auto-activates)
+    venv <name> --python <ver>  Create venv with specific Python version
     venv list               List all virtual environments
     venv remove <name>      Remove a virtual environment
     venv activate <name>    Show activation command
@@ -263,15 +265,26 @@ Commands:
     pip list                List installed packages
     pip upgrade <pkg>       Upgrade a package
     pip freeze              List installed packages (requirements format)
+    pip check               Check for dependency conflicts
 
     export [file]           Export requirements to file (default: requirements.txt)
     import [file]           Install packages from file (default: requirements.txt)
+    lock [file]             Lock dependencies (default: requirements.lock)
+    sync [file]             Sync environment from lock file
+    tree                    Show dependency tree
     cache clean             Clean pip and pvm caches
+
+    tool install <pkg>      Install a tool (like pipx)
+    tool run <tool> [args]  Run an installed tool
+    tool list               List installed tools
+    tool uninstall <tool>   Uninstall a tool
 
     init                    Initialize a new project (pyproject.toml)
     add <pkg>               Add a dependency
     remove <pkg>            Remove a dependency
     run <cmd>               Run a command in project venv
+    build                   Build package (sdist + wheel)
+    publish                 Publish package to PyPI
 
     --help, -h              Show this help message
     --version, -v           Show pvm version
@@ -315,10 +328,17 @@ pvm_get_installed() {
     fi
 }
 
-# Get current version (current > default > none)
+# Get current version (current > .python-version > default > none)
 pvm_get_current() {
     if [[ -f "$PVM_CURRENT_FILE" ]]; then
         cat "$PVM_CURRENT_FILE" | tr -d '[:space:]'
+    elif [[ -f ".python-version" ]]; then
+        local local_ver
+        local_ver=$(cat ".python-version" | tr -d '[:space:]')
+        if [[ -n "$local_ver" ]]; then
+            echo "$local_ver"
+            return
+        fi
     elif [[ -f "$PVM_DEFAULT_FILE" ]]; then
         cat "$PVM_DEFAULT_FILE" | tr -d '[:space:]'
     fi
@@ -1195,23 +1215,53 @@ pvm_show_config() {
 pvm_venv() {
     local subcmd="$1"
     local name="$2"
+    shift 2 || true
     local venvs_dir="$PVM_VENVS_DIR"
     mkdir -p "$venvs_dir"
+
+    # Parse --python flag
+    local py_ver=""
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --python)
+                py_ver="$2"
+                shift 2
+                ;;
+            *)
+                shift
+                ;;
+        esac
+    done
 
     case "$subcmd" in
         ""|create)
             if [[ -z "$name" ]]; then
                 echo -e "${RED}Error: Please specify a venv name.${NC}"
-                echo "Usage: pvm venv <name>"
+                echo "Usage: pvm venv <name> [--python <version>]"
                 return 1
             fi
-            local current
-            current=$(pvm_get_current)
-            if [[ -z "$current" ]]; then
-                echo -e "${RED}Error: No Python version active. Run: pvm use <version>${NC}"
-                return 1
+            # Use specified Python version or current
+            local python_exe=""
+            if [[ -n "$py_ver" ]]; then
+                local resolved
+                resolved=$(pvm_resolve_available "$py_ver")
+                if [[ -n "$resolved" ]]; then
+                    python_exe="$PVM_HOME/versions/$resolved/bin/python3"
+                fi
+                if [[ ! -x "$python_exe" ]]; then
+                    echo -e "${RED}Error: Python $py_ver not installed. Run: pvm install $py_ver${NC}"
+                    return 1
+                fi
+                echo -e "${GRAY}Using Python $resolved${NC}"
+            else
+                local current
+                current=$(pvm_get_current)
+                if [[ -z "$current" ]]; then
+                    echo -e "${RED}Error: No Python version active. Run: pvm use <version>${NC}"
+                    return 1
+                fi
+                python_exe="$PVM_HOME/versions/$current/bin/python3"
             fi
-            local python_exe="$PVM_HOME/versions/$current/bin/python3"
             if [[ ! -x "$python_exe" ]]; then
                 echo -e "${RED}Error: Python executable not found.${NC}"
                 return 1
@@ -1328,8 +1378,11 @@ pvm_pip() {
         freeze)
             "$pip_exe" freeze
             ;;
+        check)
+            "$pip_exe" check
+            ;;
         *)
-            echo -e "${YELLOW}Usage: pvm pip <install|uninstall|list|upgrade|freeze> [package]${NC}"
+            echo -e "${YELLOW}Usage: pvm pip <install|uninstall|list|upgrade|freeze|check> [package]${NC}"
             ;;
     esac
 }
@@ -1547,7 +1600,7 @@ pvm() {
             pvm_show_platform
             ;;
         venv)
-            pvm_venv "$1" "$2"
+            pvm_venv "$1" "$2" "${@:3}"
             ;;
         pip)
             shift
@@ -1579,6 +1632,202 @@ pvm() {
             echo -e "${CYAN}Installing packages from $reqfile...${NC}"
             "$pip_exe" install -r "$reqfile"
             echo -e "${GREEN}Done.${NC}"
+            ;;
+        pin)
+            # Pin Python version for current directory
+            if [[ -z "$1" ]]; then
+                if [[ -f ".python-version" ]]; then
+                    local pinned_ver
+                    pinned_ver=$(cat ".python-version" | tr -d '[:space:]')
+                    echo -e "${GREEN}Pinned version: $pinned_ver${NC}"
+                    echo -e "${GRAY}File: .python-version${NC}"
+                else
+                    echo -e "${YELLOW}No version pinned in this directory.${NC}"
+                    echo -e "${YELLOW}Usage: pvm pin <version>${NC}"
+                fi
+                return
+            fi
+            local resolved
+            resolved=$(pvm_resolve_available "$1")
+            if [[ -z "$resolved" ]]; then
+                echo -e "${RED}Error: Version '$1' not found.${NC}"
+                return 1
+            fi
+            echo -n "$resolved" > ".python-version"
+            echo -e "${GREEN}Pinned Python $resolved for this directory${NC}"
+            echo -e "${GRAY}File: .python-version${NC}"
+            ;;
+        tree)
+            # Show dependency tree
+            local current
+            current=$(pvm_get_current)
+            if [[ -z "$current" ]]; then
+                echo -e "${RED}Error: No Python version active. Run: pvm use <version>${NC}"
+                return 1
+            fi
+            local pip_exe="$PVM_HOME/versions/$current/bin/pip3"
+            if [[ ! -x "$pip_exe" ]]; then
+                echo -e "${RED}Error: pip not found.${NC}"
+                return 1
+            fi
+            # Try pipdeptree first
+            local pipdeptree_exe="$PVM_HOME/versions/$current/bin/pipdeptree"
+            if [[ ! -x "$pipdeptree_exe" ]]; then
+                "$pip_exe" install pipdeptree --no-warn-script-location 2>/dev/null
+                pipdeptree_exe="$PVM_HOME/versions/$current/bin/pipdeptree"
+            fi
+            if [[ -x "$pipdeptree_exe" ]]; then
+                "$pipdeptree_exe"
+            else
+                echo -e "${CYAN}Dependency tree (flat list):${NC}"
+                "$pip_exe" list --format=columns
+            fi
+            ;;
+        lock)
+            # Lock dependencies
+            local current
+            current=$(pvm_get_current)
+            if [[ -z "$current" ]]; then
+                echo -e "${RED}Error: No Python version active. Run: pvm use <version>${NC}"
+                return 1
+            fi
+            local pip_exe="$PVM_HOME/versions/$current/bin/pip3"
+            local outfile="${1:-requirements.lock}"
+            "$pip_exe" freeze > "$outfile"
+            local count
+            count=$(wc -l < "$outfile")
+            echo -e "${GREEN}Locked $count packages to $outfile${NC}"
+            ;;
+        sync)
+            # Sync environment from lock file
+            local reqfile="${1:-requirements.lock}"
+            if [[ ! -f "$reqfile" ]]; then
+                reqfile="requirements.txt"
+                if [[ ! -f "$reqfile" ]]; then
+                    echo -e "${RED}Error: No requirements.lock or requirements.txt found.${NC}"
+                    return 1
+                fi
+            fi
+            local current
+            current=$(pvm_get_current)
+            if [[ -z "$current" ]]; then
+                echo -e "${RED}Error: No Python version active. Run: pvm use <version>${NC}"
+                return 1
+            fi
+            local pip_exe="$PVM_HOME/versions/$current/bin/pip3"
+            echo -e "${CYAN}Syncing environment from $reqfile...${NC}"
+            "$pip_exe" install -r "$reqfile"
+            echo -e "${GREEN}Environment synced.${NC}"
+            ;;
+        tool)
+            # Tool management
+            case "$1" in
+                install)
+                    if [[ -z "$2" ]]; then
+                        echo -e "${RED}Error: Please specify a tool to install.${NC}"
+                        return 1
+                    fi
+                    local current
+                    current=$(pvm_get_current)
+                    if [[ -z "$current" ]]; then
+                        echo -e "${RED}Error: No Python version active. Run: pvm use <version>${NC}"
+                        return 1
+                    fi
+                    local python_exe="$PVM_HOME/versions/$current/bin/python3"
+                    local tool_dir="$PVM_HOME/tools"
+                    mkdir -p "$tool_dir"
+                    local tool_name="$2"
+                    local tool_venv="$tool_dir/$tool_name"
+                    if [[ ! -d "$tool_venv" ]]; then
+                        "$python_exe" -m venv "$tool_venv" 2>/dev/null
+                    fi
+                    local tool_pip="$tool_venv/bin/pip3"
+                    shift 2
+                    "$tool_pip" install "$@"
+                    echo -e "${GREEN}Installed tool: $tool_name${NC}"
+                    echo -e "${GRAY}Run with: pvm tool run $tool_name${NC}"
+                    ;;
+                run)
+                    if [[ -z "$2" ]]; then
+                        echo -e "${RED}Error: Please specify a tool to run.${NC}"
+                        return 1
+                    fi
+                    local tool_dir="$PVM_HOME/tools"
+                    local tool_name="$2"
+                    local tool_exe="$tool_dir/$tool_name/bin/$tool_name"
+                    if [[ ! -x "$tool_exe" ]]; then
+                        local tool_python="$tool_dir/$tool_name/bin/python3"
+                        if [[ -x "$tool_python" ]]; then
+                            shift 2
+                            "$tool_python" -m "$tool_name" "$@"
+                            return
+                        fi
+                        echo -e "${RED}Error: Tool '$tool_name' not found. Install with: pvm tool install $tool_name${NC}"
+                        return 1
+                    fi
+                    shift 2
+                    "$tool_exe" "$@"
+                    ;;
+                list)
+                    local tool_dir="$PVM_HOME/tools"
+                    if [[ ! -d "$tool_dir" ]] || [[ -z "$(ls -A "$tool_dir" 2>/dev/null)" ]]; then
+                        echo -e "${YELLOW}No tools installed.${NC}"
+                        return 0
+                    fi
+                    echo -e "\n${CYAN}Installed tools:${NC}"
+                    for d in "$tool_dir"/*/; do
+                        echo "  $(basename "$d")"
+                    done
+                    echo ""
+                    ;;
+                uninstall)
+                    if [[ -z "$2" ]]; then
+                        echo -e "${RED}Error: Please specify a tool to uninstall.${NC}"
+                        return 1
+                    fi
+                    local tool_dir="$PVM_HOME/tools/$2"
+                    if [[ -d "$tool_dir" ]]; then
+                        rm -rf "$tool_dir"
+                        echo -e "${GREEN}Uninstalled tool: $2${NC}"
+                    else
+                        echo -e "${RED}Error: Tool '$2' not found.${NC}"
+                    fi
+                    ;;
+                *)
+                    echo -e "${YELLOW}Usage: pvm tool <install|run|list|uninstall> [args]${NC}"
+                    ;;
+            esac
+            ;;
+        build)
+            # Build package
+            local current
+            current=$(pvm_get_current)
+            if [[ -z "$current" ]]; then
+                echo -e "${RED}Error: No Python version active. Run: pvm use <version>${NC}"
+                return 1
+            fi
+            local pip_exe="$PVM_HOME/versions/$current/bin/pip3"
+            local python_exe="$PVM_HOME/versions/$current/bin/python3"
+            "$pip_exe" install build --no-warn-script-location 2>/dev/null
+            "$python_exe" -m build
+            echo -e "${GREEN}Build complete. Check dist/ folder.${NC}"
+            ;;
+        publish)
+            # Publish package to PyPI
+            local current
+            current=$(pvm_get_current)
+            if [[ -z "$current" ]]; then
+                echo -e "${RED}Error: No Python version active. Run: pvm use <version>${NC}"
+                return 1
+            fi
+            local pip_exe="$PVM_HOME/versions/$current/bin/pip3"
+            "$pip_exe" install twine --no-warn-script-location 2>/dev/null
+            local twine_exe="$PVM_HOME/versions/$current/bin/twine"
+            if [[ -x "$twine_exe" ]]; then
+                "$twine_exe" upload dist/*
+            else
+                echo -e "${RED}Error: twine not found.${NC}"
+            fi
             ;;
         cache)
             if [[ "$1" == "clean" ]]; then
