@@ -88,6 +88,12 @@ function Uninstall-Pvm {
     }
     Write-ColorOutput "" "White"
 
+    if ($env:PVM_HOME) {
+        Write-ColorOutput "  Environment variables to be removed:" "White"
+        Write-ColorOutput "    - PVM_HOME = $env:PVM_HOME" "DarkGray"
+        Write-ColorOutput "" "White"
+    }
+
     $pipConfigFile = Join-Path $env:APPDATA "pip\pip.ini"
     if (Test-Path $pipConfigFile) {
         Write-ColorOutput "  pip mirror config (may be removed):" "White"
@@ -154,6 +160,19 @@ function Uninstall-Pvm {
             $keep
         }
         $env:Path = ($procFiltered -join ';')
+    }
+
+    # Remove PVM_HOME environment variable
+    try {
+        $currentPvmHome = [Environment]::GetEnvironmentVariable("PVM_HOME", "User")
+        if ($currentPvmHome) {
+            [Environment]::SetEnvironmentVariable("PVM_HOME", $null, "User")
+            $env:PVM_HOME = $null
+            Write-ColorOutput "      PVM_HOME environment variable removed." "Green"
+        }
+    }
+    catch {
+        Write-ColorOutput "      Warning: Could not remove PVM_HOME environment variable." "Yellow"
     }
 
     # Step 2: Ask about pip config
@@ -232,8 +251,9 @@ function Uninstall-Pvm {
         Write-ColorOutput "    - $($installedVersions.Count) Python version(s)" "DarkGray"
     }
     Write-ColorOutput "    - PATH entries" "DarkGray"
+    Write-ColorOutput "    - PVM_HOME environment variable" "DarkGray"
     Write-ColorOutput "" "White"
-    Write-ColorOutput "  Note: Open a new terminal window for PATH changes to take effect." "Yellow"
+    Write-ColorOutput "  Note: Open a new terminal window for changes to take effect." "Yellow"
     Write-ColorOutput "" "White"
 }
 

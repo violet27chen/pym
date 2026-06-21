@@ -535,6 +535,20 @@ function Resolve-PythonVersion {
     return $null
 }
 
+function Show-PlatformInfo {
+    $arch = Get-SystemArchitecture
+    $archDisplay = switch ($arch) {
+        '64' { 'x86_64 (64-bit)' }
+        '32' { 'x86 (32-bit)' }
+        'arm64' { 'ARM64' }
+    }
+    Write-Host ""
+    Write-Host "Detected Platform:" -ForegroundColor Cyan
+    Write-Host "  OS: Windows"
+    Write-Host "  Architecture: $archDisplay"
+    Write-Host ""
+}
+
 function Get-PresetName {
     <#
     .SYNOPSIS
@@ -1571,19 +1585,8 @@ switch ($Command) {
     'config' {
         Set-PvmConfig -MirrorName $Version
     }
-    'arch', 'platform' {
-        $arch = Get-SystemArchitecture
-        $archDisplay = switch ($arch) {
-            '64' { 'x86_64 (64-bit)' }
-            '32' { 'x86 (32-bit)' }
-            'arm64' { 'ARM64' }
-        }
-        Write-Host ""
-        Write-Host "Detected Platform:" -ForegroundColor Cyan
-        Write-Host "  OS: Windows"
-        Write-Host "  Architecture: $archDisplay"
-        Write-Host ""
-    }
+    'arch' { Show-PlatformInfo }
+    'platform' { Show-PlatformInfo }
     'venv' {
         # Collect remaining args as: pvm venv <subcommand> [name]
         $subCmd = $Version  # Position 1 maps to subcommand
