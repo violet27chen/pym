@@ -244,23 +244,12 @@ function Install-Pvm {
         Write-ColorOutput "PATH already configured." "Green"
     }
 
-    # Create PowerShell profile integration (optional)
-    $profileDir = Split-Path $PROFILE
-    if (-not (Test-Path $profileDir)) {
-        New-Item -ItemType Directory -Path $profileDir -Force | Out-Null
-    }
-
     # Success message
     Write-ColorOutput "`n==============================================" "Green"
     Write-ColorOutput "  pvm installed successfully!" "Green"
     Write-ColorOutput "==============================================`n" "Green"
 
-    Write-ColorOutput "IMPORTANT: To activate pvm, do ONE of the following:" "Yellow"
-    Write-ColorOutput ""
-    Write-ColorOutput "  Option 1 - Refresh PATH in current session:" "White"
-    Write-ColorOutput "    `$env:Path = [Environment]::GetEnvironmentVariable('Path', 'User') + ';' + `$env:Path" "Cyan"
-    Write-ColorOutput ""
-    Write-ColorOutput "  Option 2 - Open a new PowerShell/CMD window" "White"
+    Write-ColorOutput "You can now use pvm directly in this session." "Yellow"
     Write-ColorOutput ""
 
     Write-ColorOutput "----------------------------------------------" "White"
