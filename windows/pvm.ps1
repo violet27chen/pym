@@ -2122,9 +2122,27 @@ switch ($Command) {
                 $toolName = $toolArgs[0] -replace '[\[].*[\]]', ''
                 $toolVenv = Join-Path $toolDir $toolName
                 if (-not (Test-Path $toolVenv)) {
-                    & $pythonExe -m venv $toolVenv 2>&1 | Out-Null
+                    $toolVenvCreated = $false
+                    try {
+                        & $pythonExe -m venv $toolVenv 2>&1 | Out-Null
+                        if (Test-Path $toolVenv) { $toolVenvCreated = $true }
+                    } catch { }
+                    if (-not $toolVenvCreated) {
+                        $toolPipSrc = Join-Path (Split-Path $pythonExe) "Scripts\pip.exe"
+                        if (Test-Path $toolPipSrc) {
+                            & $toolPipSrc install virtualenv --no-warn-script-location 2>&1 | Out-Null
+                        }
+                        $virtualenvExe = Join-Path (Split-Path $pythonExe) "Scripts\virtualenv.exe"
+                        if (Test-Path $virtualenvExe) {
+                            & $virtualenvExe $toolVenv 2>&1 | Out-Null
+                        }
+                    }
                 }
                 $toolPip = Join-Path $toolVenv "Scripts\pip.exe"
+                if (-not (Test-Path $toolPip)) {
+                    Write-Host "Error: Failed to create tool environment." -ForegroundColor Red
+                    return
+                }
                 & $toolPip install @toolArgs
                 Write-Host "Installed tool: $toolName" -ForegroundColor Green
                 Write-Host "Run with: pvm tool run $toolName" -ForegroundColor DarkGray
