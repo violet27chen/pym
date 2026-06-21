@@ -515,6 +515,7 @@ function Resolve-PythonVersion {
     .SYNOPSIS
         Resolve a partial version string to the latest full version.
         e.g. "3.13" -> "3.13.14", "3" -> "3.14.6"
+        On Windows, skips versions that don't have embeddable packages.
     #>
     param([string]$Version)
 
@@ -525,11 +526,37 @@ function Resolve-PythonVersion {
 
     # Partial version: match from available versions (already sorted descending)
     $available = Get-AvailableVersions
-    $matches = $available | Where-Object { $_ -like "$Version*" -or $_ -like "$Version.*" }
-    if ($matches) {
-        $resolved = $matches[0]
-        Write-Host "Resolved version: $Version -> $resolved" -ForegroundColor DarkGray
-        return $resolved
+    $candidates = $available | Where-Object { $_ -like "$Version*" -or $_ -like "$Version.*" }
+
+    foreach ($v in $candidates) {
+        # On Windows, verify embeddable package exists before resolving
+        if ($env:OS -eq 'Windows_NT') {
+            $testUrl = "https://www.python.org/ftp/python/$v/python-$v-embed-amd64.zip"
+            try {
+                $request = [System.Net.HttpWebRequest]::Create($testUrl)
+                $request.UserAgent = "pvm/$($script:PVM_VERSION)"
+                $request.Method = "HEAD"
+                $request.Timeout = 5000
+                $response = $request.GetResponse()
+                $response.Close()
+                Write-Host "Resolved version: $Version -> $v" -ForegroundColor DarkGray
+                return $v
+            }
+            catch {
+                Write-Host "  Skipping $v (no Windows embeddable package)" -ForegroundColor DarkGray
+            }
+        }
+        else {
+            # Linux/macOS: always valid (uses python-build-standalone)
+            Write-Host "Resolved version: $Version -> $v" -ForegroundColor DarkGray
+            return $v
+        }
+    }
+
+    # Fallback: return first match without checking
+    if ($candidates) {
+        Write-Host "Resolved version: $Version -> $($candidates[0])" -ForegroundColor DarkGray
+        return $candidates[0]
     }
 
     return $null
