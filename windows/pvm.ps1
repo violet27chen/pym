@@ -759,9 +759,23 @@ function Install-PythonVersion {
         }
         
         # Extract
-        Write-Host "[2/3] Extracting files..." -ForegroundColor Yellow
-        Expand-Archive -Path $zipPath -DestinationPath $versionDir -Force
-        
+        Write-Host "[2/3] Extracting files..." -ForegroundColor Yellow -NoNewline
+        $spinnerChars = @('|', '/', '-', '\')
+        $job = Start-Job -ScriptBlock {
+            param($zip, $dest)
+            Expand-Archive -Path $zip -DestinationPath $dest -Force
+        } -ArgumentList $zipPath, $versionDir
+
+        $i = 0
+        while ($job.JobStateInfo.State -eq 'Running') {
+            Write-Host "`r      Extracting... $($spinnerChars[$i % 4])  " -NoNewline -ForegroundColor Cyan
+            $i++
+            Start-Sleep -Milliseconds 200
+        }
+        Receive-Job $job -ErrorAction SilentlyContinue
+        Remove-Job $job -Force
+        Write-Host "`r      Extraction complete!                    " -ForegroundColor Green
+
         # Enable pip by modifying python*._pth file
         $pthFiles = Get-ChildItem -Path $versionDir -Filter "python*._pth"
         foreach ($pthFile in $pthFiles) {
@@ -769,32 +783,59 @@ function Install-PythonVersion {
             $newContent = $content -replace '#import site', 'import site'
             Set-Content -Path $pthFile.FullName -Value $newContent
         }
-        
-        Write-Host "      Extraction complete!" -ForegroundColor Green
-        
+
         # Download get-pip.py and install pip
-        Write-Host "[3/3] Installing pip..." -ForegroundColor Yellow
+        Write-Host "[3/3] Installing pip..." -ForegroundColor Yellow -NoNewline
         $getPipUrl = "https://bootstrap.pypa.io/get-pip.py"
         $getPipPath = Join-Path $versionDir "get-pip.py"
-        
+
         try {
+            Write-Host "`r      Downloading get-pip.py...              " -NoNewline -ForegroundColor Cyan
             Save-UrlFile -Url $getPipUrl -OutFile $getPipPath
-            
+
             $pythonExe = Join-Path $versionDir "python.exe"
-            & $pythonExe $getPipPath --no-warn-script-location 2>&1 | Out-Null
-            
+            Write-Host "`r      Installing pip... $($spinnerChars[0])  " -NoNewline -ForegroundColor Cyan
+            $pipJob = Start-Job -ScriptBlock {
+                param($py, $pip)
+                & $py $pip --no-warn-script-location 2>&1 | Out-Null
+                return $LASTEXITCODE
+            } -ArgumentList $pythonExe, $getPipPath
+
+            $i = 0
+            while ($pipJob.JobStateInfo.State -eq 'Running') {
+                Write-Host "`r      Installing pip... $($spinnerChars[$i % 4])  " -NoNewline -ForegroundColor Cyan
+                $i++
+                Start-Sleep -Milliseconds 200
+            }
+            $pipResult = Receive-Job $pipJob -ErrorAction SilentlyContinue
+            Remove-Job $pipJob -Force
+
             # Install/upgrade setuptools and wheel for a complete environment
             $pipExe = Join-Path $versionDir "Scripts\pip.exe"
             if (Test-Path $pipExe) {
-                & $pipExe install --upgrade setuptools wheel --no-warn-script-location 2>&1 | Out-Null
+                Write-Host "`r      Installing setuptools+wheel... $($spinnerChars[0])  " -NoNewline -ForegroundColor Cyan
+                $swJob = Start-Job -ScriptBlock {
+                    param($pip)
+                    & $pip install --upgrade setuptools wheel --no-warn-script-location 2>&1 | Out-Null
+                } -ArgumentList $pipExe
+
+                $i = 0
+                while ($swJob.JobStateInfo.State -eq 'Running') {
+                    Write-Host "`r      Installing setuptools+wheel... $($spinnerChars[$i % 4])  " -NoNewline -ForegroundColor Cyan
+                    $i++
+                    Start-Sleep -Milliseconds 200
+                }
+                Receive-Job $swJob -ErrorAction SilentlyContinue
+                Remove-Job $swJob -Force
             }
-            
+
             Remove-Item -Path $getPipPath -Force -ErrorAction SilentlyContinue
+            Write-Host "`r      pip installed!                                      " -ForegroundColor Green
         }
         catch {
-            Write-Host "Warning: Could not install pip. You may need to install it manually." -ForegroundColor Yellow
+            Write-Host "`r      Warning: Could not install pip.                    " -ForegroundColor Yellow
         }
-        
+
         Write-Host ""
         Write-Host "=============================================" -ForegroundColor Green
         Write-Host "  Python $Version installed successfully!" -ForegroundColor Green
