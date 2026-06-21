@@ -193,6 +193,18 @@ function Install-Pvm {
         Write-FileNoBom $settingsPath $defaultSettings
     }
 
+    # Set PVM_HOME environment variable
+    Write-ColorOutput "Setting PVM_HOME..." "Yellow"
+    try {
+        [Environment]::SetEnvironmentVariable("PVM_HOME", $InstallDir, "User")
+        $env:PVM_HOME = $InstallDir
+        Write-ColorOutput "PVM_HOME = $InstallDir" "Green"
+    }
+    catch {
+        Write-ColorOutput "Warning: Could not set PVM_HOME automatically." "Yellow"
+        Write-ColorOutput "Please set it manually: `$env:PVM_HOME = `"$InstallDir`"" "Yellow"
+    }
+
     # Add to PATH
     Write-ColorOutput "Configuring PATH..." "Yellow"
     

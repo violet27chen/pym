@@ -335,6 +335,9 @@ export PATH=\"\$PVM_HOME/python/bin:\$PVM_HOME/shims:\$PATH\"
         print_color "$GREEN" "Shell profile updated."
     fi
 
+    # Export for current session
+    export PVM_HOME="$PVM_HOME"
+
     # Success message
     print_color "$GREEN" ""
     print_color "$GREEN" "=============================================="
