@@ -38,8 +38,8 @@ $PVM_CDN_BASE = "https://cdn.jsdelivr.net/gh/violet27chen/pym@main"
 # Determine download source priority
 # CDN mode: env var, parameter, or auto-detect (when piped via iex -> prioritize CDN)
 $useCdn = $CDN -or ($env:PVM_CDN -eq '1')
-if (-not $useCdn -and -not $MyInvocation.MyCommand.Path) {
-    # Script is being piped via iex, default to CDN priority
+if (-not $useCdn -and -not $PSScriptRoot) {
+    # Script is being piped via iex (no script file path), default to CDN priority
     $useCdn = $true
 }
 
@@ -69,6 +69,17 @@ function Test-Administrator {
     return $currentPrincipal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
 }
 
+# UTF-8 without BOM writer (avoids BOM issues with .cmd/.ps1 files)
+$script:Utf8NoBom = New-Object System.Text.UTF8Encoding $false
+function Write-FileNoBom {
+    param([string]$Path, [string]$Content)
+    [System.IO.File]::WriteAllText($Path, $Content, $script:Utf8NoBom)
+}
+function Write-FileAscii {
+    param([string]$Path, [string]$Content)
+    [System.IO.File]::WriteAllText($Path, $Content, [System.Text.Encoding]::ASCII)
+}
+
 function Install-Pvm {
     Write-ColorOutput "`n==================================" "Cyan"
     Write-ColorOutput "  pvm - Python Version Manager" "Cyan"
@@ -76,7 +87,7 @@ function Install-Pvm {
     Write-ColorOutput "==================================`n" "Cyan"
 
     # Common headers for all HTTP requests (avoid CDN 403)
-    $script:HttpHeaders = @{ "User-Agent" = "pvm/$($PVM_REPO -replace '.*@','')" }
+    $script:HttpHeaders = @{ "User-Agent" = "pvm-installer/1.0.0" }
 
     # Show download source priority
     $primarySource = $downloadSources[0].Name
@@ -110,17 +121,17 @@ function Install-Pvm {
         try {
             Write-ColorOutput "  Trying $($source.Name)..." "DarkGray"
             $ps1Content = (Invoke-WebRequest -Uri "$($source.Base)/windows/pvm.ps1" -UseBasicParsing -Headers $script:HttpHeaders).Content
-            Set-Content -Path (Join-Path $windowsDir "pvm.ps1") -Value $ps1Content -Encoding UTF8
+            Write-FileNoBom (Join-Path $windowsDir "pvm.ps1") $ps1Content
 
             $cmdContent = (Invoke-WebRequest -Uri "$($source.Base)/windows/pvm.cmd" -UseBasicParsing -Headers $script:HttpHeaders).Content
-            [System.IO.File]::WriteAllBytes((Join-Path $windowsDir "pvm.cmd"), [System.Text.Encoding]::ASCII.GetBytes($cmdContent))
+            Write-FileAscii (Join-Path $windowsDir "pvm.cmd") $cmdContent
 
             $elevateContent = (Invoke-WebRequest -Uri "$($source.Base)/windows/elevate.cmd" -UseBasicParsing -Headers $script:HttpHeaders).Content
-            [System.IO.File]::WriteAllBytes((Join-Path $windowsDir "elevate.cmd"), [System.Text.Encoding]::ASCII.GetBytes($elevateContent))
+            Write-FileAscii (Join-Path $windowsDir "elevate.cmd") $elevateContent
 
             # Download uninstall script
             $uninstallContent = (Invoke-WebRequest -Uri "$($source.Base)/uninstall.ps1" -UseBasicParsing -Headers $script:HttpHeaders).Content
-            Set-Content -Path (Join-Path $InstallDir "uninstall.ps1") -Value $uninstallContent -Encoding UTF8
+            Write-FileNoBom (Join-Path $InstallDir "uninstall.ps1") $uninstallContent
 
             Write-ColorOutput "  Downloaded from $($source.Name)." "Green"
             $downloaded = $true
@@ -141,8 +152,8 @@ function Install-Pvm {
         elseif ($MyInvocation.MyCommand.Path) {
             $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
         }
-        elseif (Test-Path ".\windows\pvm.ps1") {
-            $scriptDir = (Get-Location).Path
+        elseif (Test-Path "$PWD\windows\pvm.ps1") {
+            $scriptDir = $PWD.Path
         }
         
         if ($scriptDir -and (Test-Path (Join-Path $scriptDir "windows\pvm.ps1"))) {
@@ -164,15 +175,16 @@ function Install-Pvm {
 @echo off
 "%~dp0windows\pvm.cmd" %*
 "@
-    Set-Content -Path $rootCmdPath -Value $rootCmdContent -Encoding ASCII
+    Write-FileAscii $rootCmdPath $rootCmdContent
 
     # Create default settings
     $settingsPath = Join-Path $InstallDir "settings.json"
     if (-not (Test-Path $settingsPath)) {
         $defaultSettings = @{
             mirror = "https://www.python.org/ftp/python"
+            mirror_selected = $false
         } | ConvertTo-Json
-        Set-Content -Path $settingsPath -Value $defaultSettings -Encoding UTF8
+        Write-FileNoBom $settingsPath $defaultSettings
     }
 
     # Add to PATH
@@ -197,8 +209,9 @@ function Install-Pvm {
     if ($pathModified) {
         try {
             [Environment]::SetEnvironmentVariable("PATH", $userPath, "User")
-            # Refresh current session PATH so pvm works immediately
-            $env:Path = $userPath + ';' + $env:Path
+            # Refresh current session: merge User PATH + System PATH (no duplicates)
+            $systemPath = [Environment]::GetEnvironmentVariable("PATH", "Machine")
+            $env:Path = $userPath + ';' + $systemPath
             Write-ColorOutput "PATH updated successfully." "Green"
         }
         catch {
@@ -210,11 +223,6 @@ function Install-Pvm {
         }
     }
     else {
-        # Even if not modified, ensure current session has the paths
-        $currentUserPath = [Environment]::GetEnvironmentVariable("PATH", "User")
-        if ($currentUserPath) {
-            $env:Path = $currentUserPath + ';' + $env:Path
-        }
         Write-ColorOutput "PATH already configured." "Green"
     }
 
@@ -272,7 +280,7 @@ function Install-Pvm {
     Write-ColorOutput "  pvm arch              - Show system architecture" "White"
     Write-ColorOutput "  pvm --help            - Show help" "White"
     Write-ColorOutput ""
-    Write-ColorOutput "  To uninstall pvm:     powershell -ExecutionPolicy Bypass -File `"$InstallDir\uninstall.ps1`"" "DarkGray"
+    Write-ColorOutput "  To uninstall pvm:     & `"$InstallDir\uninstall.ps1`"" "DarkGray"
     Write-ColorOutput ""
 
     Write-ColorOutput "Installation path: $InstallDir" "Green"

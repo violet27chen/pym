@@ -89,6 +89,7 @@ RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 CYAN='\033[0;36m'
+WHITE='\033[1;37m'
 GRAY='\033[0;90m'
 NC='\033[0m' # No Color
 
@@ -1338,12 +1339,18 @@ PROJ
                 echo -e "${RED}Error: Please specify a command to run.${NC}"
                 return 1
             fi
-            local python_exe=".pvm-venv/bin/python"
-            if [[ ! -x "$python_exe" ]]; then
+            local venv_bin=".pvm-venv/bin"
+            if [[ ! -d "$venv_bin" ]]; then
                 echo -e "${RED}Error: No .pvm-venv found. Run 'pvm init' first.${NC}"
                 return 1
             fi
-            "$python_exe" "$@"
+            # Run command in venv context by prepending venv bin to PATH
+            local old_path="$PATH"
+            PATH="$(pwd)/$venv_bin:$PATH"
+            "$@"
+            local rc=$?
+            PATH="$old_path"
+            return $rc
             ;;
         *)
             echo -e "${YELLOW}Usage: pvm <init|add|remove|run> [args]${NC}"

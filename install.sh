@@ -310,7 +310,7 @@ install_pvm() {
     # Create default settings
     local settings_file="$PVM_HOME/settings.json"
     if [[ ! -f "$settings_file" ]]; then
-        echo '{"mirror": "https://www.python.org/ftp/python"}' > "$settings_file"
+        echo '{"mirror": "https://www.python.org/ftp/python", "mirror_selected": false}' > "$settings_file"
     fi
 
     # Add to shell profile
@@ -319,12 +319,12 @@ install_pvm() {
     local profile
     profile=$(get_profile)
     
-    local pvm_init_snippet='
+    local pvm_init_snippet="
 # pvm - Python Version Manager
-export PVM_HOME="$HOME/.pvm"
-[ -s "$PVM_HOME/pvm.sh" ] && source "$PVM_HOME/pvm.sh"
-export PATH="$PVM_HOME/python/bin:$PVM_HOME/shims:$PATH"
-'
+export PVM_HOME=\"$PVM_HOME\"
+[ -s \"\$PVM_HOME/pvm.sh\" ] && source \"\$PVM_HOME/pvm.sh\"
+export PATH=\"\$PVM_HOME/python/bin:\$PVM_HOME/shims:\$PATH\"
+"
 
     # Check if already configured
     if grep -q "PVM_HOME" "$profile" 2>/dev/null; then

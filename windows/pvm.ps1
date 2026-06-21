@@ -95,9 +95,6 @@ $script:PVM_SYMLINK = Join-Path $script:PVM_HOME "python"
 $script:PVM_SHIMS_DIR = Join-Path $script:PVM_HOME "shims"
 $script:PVM_VENVS_DIR = Join-Path $script:PVM_HOME "venvs"
 
-# HTTP User-Agent (required by jsDelivr and other CDNs)
-$script:UserAgent = "pvm/$($script:PVM_VERSION)"
-
 # Auto-create --home directory if it doesn't exist
 if (-not (Test-Path $script:PVM_HOME)) {
     New-Item -ItemType Directory -Path $script:PVM_HOME -Force | Out-Null
@@ -693,6 +690,10 @@ function Install-PythonVersion {
             }
             catch {
                 $ProgressPreference = 'Continue'
+                # Close streams to avoid resource leak
+                if ($fileStream) { try { $fileStream.Close() } catch { } }
+                if ($stream) { try { $stream.Close() } catch { } }
+                if ($response) { try { $response.Close() } catch { } }
                 Write-Host "`r      $($m.Name) failed: $($_.Exception.Message)          " -ForegroundColor DarkGray
                 if (Test-Path $zipPath) { Remove-Item -Path $zipPath -Force -ErrorAction SilentlyContinue }
             }
@@ -1460,13 +1461,20 @@ build-backend = "setuptools.backends._legacy:_Backend"
                 return
             }
             $venvPath = Join-Path (Get-Location) ".pvm-venv"
-            $pythonExe = Join-Path $venvPath "Scripts\python.exe"
-            if (-not (Test-Path $pythonExe)) {
+            $venvScripts = Join-Path $venvPath "Scripts"
+            if (-not (Test-Path (Join-Path $venvScripts "python.exe"))) {
                 Write-Host "Error: No .pvm-venv found. Run 'pvm init' first." -ForegroundColor Red
                 return
             }
-            $cmd = $ExtraArgs -join ' '
-            & $pythonExe @ExtraArgs
+            # Run command in venv context by prepending venv paths to PATH
+            $oldPath = $env:Path
+            $env:Path = "$venvScripts;$venvPath;$env:Path"
+            try {
+                & $ExtraArgs[0] $ExtraArgs[1..($ExtraArgs.Count - 1)]
+            }
+            finally {
+                $env:Path = $oldPath
+            }
         }
         default {
             Write-Host "Usage: pvm <init|add|remove|run> [args]" -ForegroundColor Yellow
@@ -1487,6 +1495,7 @@ if (-not $PvmHomePath) {
             $script:PVM_SETTINGS_FILE = Join-Path $script:PVM_HOME "settings.json"
             $script:PVM_SYMLINK = Join-Path $script:PVM_HOME "python"
             $script:PVM_SHIMS_DIR = Join-Path $script:PVM_HOME "shims"
+            $script:PVM_VENVS_DIR = Join-Path $script:PVM_HOME "venvs"
             break
         }
     }
@@ -1552,20 +1561,7 @@ switch ($Command) {
     'config' {
         Set-PvmConfig -MirrorName $Version
     }
-    'arch' {
-        $arch = Get-SystemArchitecture
-        $archDisplay = switch ($arch) {
-            '64' { 'x86_64 (64-bit)' }
-            '32' { 'x86 (32-bit)' }
-            'arm64' { 'ARM64' }
-        }
-        Write-Host ""
-        Write-Host "Detected Platform:" -ForegroundColor Cyan
-        Write-Host "  OS: Windows"
-        Write-Host "  Architecture: $archDisplay"
-        Write-Host ""
-    }
-    'platform' {
+    'arch', 'platform' {
         $arch = Get-SystemArchitecture
         $archDisplay = switch ($arch) {
             '64' { 'x86_64 (64-bit)' }
