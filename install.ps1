@@ -18,13 +18,24 @@ param(
     [switch]$CDN
 )
 
-# Determine install directory: parameter > PVM_HOME env var > default
+# Determine install directory: parameter > PVM_HOME env var > interactive > default
 if ([string]::IsNullOrEmpty($InstallDir)) {
     if ($env:PVM_HOME) {
         $InstallDir = $env:PVM_HOME
     }
     else {
-        $InstallDir = Join-Path $env:USERPROFILE ".pvm"
+        $defaultDir = Join-Path $env:USERPROFILE ".pvm"
+        Write-Host ""
+        Write-Host "  Where would you like to install pvm?" -ForegroundColor Cyan
+        Write-Host "  Press Enter to use default: $defaultDir" -ForegroundColor DarkGray
+        Write-Host ""
+        $userInput = Read-Host "  Install path"
+        if ([string]::IsNullOrEmpty($userInput)) {
+            $InstallDir = $defaultDir
+        }
+        else {
+            $InstallDir = $userInput.Trim('"').Trim("'")
+        }
     }
 }
 
@@ -285,6 +296,12 @@ function Install-Pvm {
     Write-ColorOutput "  pvm which             - Show Python path" "White"
     Write-ColorOutput "  pvm config [mirror]   - Configure download mirror" "White"
     Write-ColorOutput "  pvm arch              - Show system architecture" "White"
+    Write-ColorOutput "  pvm alias default <v> - Set default version" "White"
+    Write-ColorOutput "  pvm venv <name>       - Create virtual environment" "White"
+    Write-ColorOutput "  pvm pip install <pkg> - Install a package" "White"
+    Write-ColorOutput "  pvm init              - Initialize a project" "White"
+    Write-ColorOutput "  pvm add <pkg>         - Add a dependency" "White"
+    Write-ColorOutput "  pvm run <cmd>         - Run command in project venv" "White"
     Write-ColorOutput "  pvm --help            - Show help" "White"
     Write-ColorOutput ""
     Write-ColorOutput "  To uninstall pvm:     & `"$InstallDir\uninstall.ps1`"" "DarkGray"

@@ -18,10 +18,7 @@
 set -e
 
 # Configuration
-PVM_HOME="${PVM_HOME:-$HOME/.pvm}"
-PVM_REPO="https://github.com/violet27chen/pym.git"
-PVM_RAW_BASE="https://raw.githubusercontent.com/violet27chen/pym/main"
-PVM_CDN_BASE="https://cdn.jsdelivr.net/gh/violet27chen/pym@main"
+PVM_HOME="${PVM_HOME:-}"
 
 # Colors
 RED='\033[0;31m'
@@ -31,6 +28,29 @@ CYAN='\033[0;36m'
 WHITE='\033[1;37m'
 GRAY='\033[0;37m'
 NC='\033[0m' # No Color
+
+# Interactive directory selection (if not set via env var)
+if [[ -z "$PVM_HOME" ]]; then
+    DEFAULT_HOME="$HOME/.pvm"
+    echo ""
+    echo -e "  ${CYAN}Where would you like to install pvm?${NC}"
+    echo -e "  ${GRAY}Press Enter to use default: $DEFAULT_HOME${NC}"
+    echo ""
+    read -rp "  Install path: " user_input
+    if [[ -z "$user_input" ]]; then
+        PVM_HOME="$DEFAULT_HOME"
+    else
+        # Remove surrounding quotes if present
+        PVM_HOME="${user_input#\"}"
+        PVM_HOME="${PVM_HOME%\"}"
+        PVM_HOME="${PVM_HOME#\'}"
+        PVM_HOME="${PVM_HOME%\'}"
+    fi
+fi
+PVM_HOME="${PVM_HOME:-$HOME/.pvm}"
+PVM_REPO="https://github.com/violet27chen/pym.git"
+PVM_RAW_BASE="https://raw.githubusercontent.com/violet27chen/pym/main"
+PVM_CDN_BASE="https://cdn.jsdelivr.net/gh/violet27chen/pym@main"
 
 # Determine download source priority
 # CDN mode: env var, --cdn argument, or auto-detect (piped via curl -> prioritize CDN)
@@ -386,6 +406,12 @@ export PATH=\"\$PVM_HOME/python/bin:\$PVM_HOME/shims:\$PATH\"
     echo "  pvm which             - Show Python path"
     echo "  pvm config [mirror]   - Configure download mirror"
     echo "  pvm arch              - Show system architecture"
+    echo "  pvm alias default <v> - Set default version"
+    echo "  pvm venv <name>       - Create virtual environment"
+    echo "  pvm pip install <pkg> - Install a package"
+    echo "  pvm init              - Initialize a project"
+    echo "  pvm add <pkg>         - Add a dependency"
+    echo "  pvm run <cmd>         - Run command in project venv"
     echo "  pvm --help            - Show help"
     echo ""
     echo -e "  ${GRAY}To uninstall pvm:     bash $PVM_HOME/uninstall.sh${NC}"

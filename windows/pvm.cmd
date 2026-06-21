@@ -18,5 +18,6 @@ if %errorlevel% neq 0 (
 )
 
 rem Execute the PowerShell script with proper argument handling
-powershell -NoProfile -ExecutionPolicy Bypass -File "%PVM_DIR%pvm.ps1" %*
+rem Use -Command to avoid PowerShell interpreting script args as its own parameters
+powershell -NoProfile -ExecutionPolicy Bypass -Command "& '%PVM_DIR%pvm.ps1' %*"
 exit /b %errorlevel%

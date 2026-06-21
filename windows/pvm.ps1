@@ -305,12 +305,13 @@ function Prompt-MirrorSelection {
         "2" = "tsinghua"
         "3" = "huawei"
         "4" = "aliyun"
-        ""  = "default"
     }
 
-    $selected = $mirrorMap[$choice]
-    if (-not $selected) {
+    if ([string]::IsNullOrEmpty($choice) -or -not $mirrorMap.ContainsKey($choice)) {
         $selected = "default"
+    }
+    else {
+        $selected = $mirrorMap[$choice]
     }
 
     $mirrorUrl = $script:MIRRORS[$selected]
@@ -1446,7 +1447,23 @@ function Invoke-PvmVenv {
                 return
             }
             Write-Host "Creating virtual environment '$Name'..." -ForegroundColor Cyan
-            & $pythonExe -m venv $venvPath 2>&1 | Out-Null
+            # Try venv first, fallback to virtualenv (embeddable Python lacks venv module)
+            $venvCreated = $false
+            try {
+                & $pythonExe -m venv $venvPath 2>&1 | Out-Null
+                if (Test-Path $venvPath) { $venvCreated = $true }
+            } catch { }
+            if (-not $venvCreated) {
+                # Install and use virtualenv as fallback
+                $pipExe = Join-Path (Split-Path $pythonExe) "Scripts\pip.exe"
+                if (Test-Path $pipExe) {
+                    & $pipExe install virtualenv --no-warn-script-location 2>&1 | Out-Null
+                }
+                $virtualenvExe = Join-Path (Split-Path $pythonExe) "Scripts\virtualenv.exe"
+                if (Test-Path $virtualenvExe) {
+                    & $virtualenvExe $venvPath 2>&1 | Out-Null
+                }
+            }
             if (Test-Path $venvPath) {
                 Write-Host "Created: $venvPath" -ForegroundColor Green
                 Write-Host "Activate: & `"$venvPath\Scripts\Activate.ps1`"" -ForegroundColor DarkGray
@@ -1588,7 +1605,21 @@ build-backend = "setuptools.backends._legacy:_Backend"
                 $venvPath = Join-Path (Get-Location) ".pvm-venv"
                 if (-not (Test-Path $venvPath)) {
                     Write-Host "Creating project virtual environment..." -ForegroundColor Cyan
-                    & $pythonExe -m venv $venvPath 2>&1 | Out-Null
+                    $venvCreated = $false
+                    try {
+                        & $pythonExe -m venv $venvPath 2>&1 | Out-Null
+                        if (Test-Path $venvPath) { $venvCreated = $true }
+                    } catch { }
+                    if (-not $venvCreated) {
+                        $pipExe = Join-Path (Split-Path $pythonExe) "Scripts\pip.exe"
+                        if (Test-Path $pipExe) {
+                            & $pipExe install virtualenv --no-warn-script-location 2>&1 | Out-Null
+                        }
+                        $virtualenvExe = Join-Path (Split-Path $pythonExe) "Scripts\virtualenv.exe"
+                        if (Test-Path $virtualenvExe) {
+                            & $virtualenvExe $venvPath 2>&1 | Out-Null
+                        }
+                    }
                     Write-Host "Created .pvm-venv/" -ForegroundColor Green
                 }
             }
@@ -1603,8 +1634,14 @@ build-backend = "setuptools.backends._legacy:_Backend"
                 Write-Host "Error: No pyproject.toml found. Run 'pvm init' first." -ForegroundColor Red
                 return
             }
-            # Install the package
-            Invoke-PvmPip -SubCommand "install" -ExtraArgs $ExtraArgs
+            # Install the package into project venv
+            $venvPath = Join-Path (Get-Location) ".pvm-venv"
+            $venvPip = Join-Path $venvPath "Scripts\pip.exe"
+            if (Test-Path $venvPip) {
+                & $venvPip install @ExtraArgs
+            } else {
+                Invoke-PvmPip -SubCommand "install" -ExtraArgs $ExtraArgs
+            }
             # Add to pyproject.toml dependencies
             $content = Get-Content $pyprojectFile -Raw
             $pkg = $ExtraArgs[0] -replace '[\[].*[\]]', ''  # strip version spec
@@ -1631,7 +1668,14 @@ build-backend = "setuptools.backends._legacy:_Backend"
                 Set-Content -Path $pyprojectFile -Value $content -Encoding UTF8
                 Write-Host "Removed '$pkg' from pyproject.toml" -ForegroundColor Green
             }
-            Invoke-PvmPip -SubCommand "uninstall" -ExtraArgs $ExtraArgs
+            # Uninstall from project venv
+            $venvPath = Join-Path (Get-Location) ".pvm-venv"
+            $venvPip = Join-Path $venvPath "Scripts\pip.exe"
+            if (Test-Path $venvPip) {
+                & $venvPip uninstall -y @ExtraArgs
+            } else {
+                Invoke-PvmPip -SubCommand "uninstall" -ExtraArgs $ExtraArgs
+            }
         }
         'run' {
             if ($ExtraArgs.Count -eq 0) {
@@ -1661,26 +1705,45 @@ build-backend = "setuptools.backends._legacy:_Backend"
 }
 
 # Main execution
-# Manual --home parsing (handles: pvm install 3.12 --home D:\pvm)
+
+# --- Early --home parsing (for -Command mode where PowerShell doesn't bind named params) ---
+# In -Command mode, --home may land in $Command or $RemainingArgs
 if (-not $PvmHomePath) {
-    for ($i = 0; $i -lt $RemainingArgs.Count; $i++) {
-        if ($RemainingArgs[$i] -eq '--home' -and ($i + 1) -lt $RemainingArgs.Count) {
-            $PvmHomePath = $RemainingArgs[$i + 1]
-            # Remove --home and its value from RemainingArgs
-            $RemainingArgs = @($RemainingArgs[0..($i-1)]) + @($RemainingArgs[($i+2)..($RemainingArgs.Count-1)])
-            # Re-derive paths
-            $script:PVM_HOME = $PvmHomePath
-            $script:PVM_VERSIONS_DIR = Join-Path $script:PVM_HOME "versions"
-            $script:PVM_CURRENT_FILE = Join-Path $script:PVM_HOME "current"
-            $script:PVM_DEFAULT_FILE = Join-Path $script:PVM_HOME "default"
-            $script:PVM_SETTINGS_FILE = Join-Path $script:PVM_HOME "settings.json"
-            $script:PVM_SYMLINK = Join-Path $script:PVM_HOME "python"
-            $script:PVM_SHIMS_DIR = Join-Path $script:PVM_HOME "shims"
-            $script:PVM_VENVS_DIR = Join-Path $script:PVM_HOME "venvs"
-            break
+    $homeParsed = $false
+    # Check if --home is in $Command (Position 0)
+    if ($Command -eq '--home' -and -not [string]::IsNullOrEmpty($Version)) {
+        $PvmHomePath = $Version
+        $Command = if ($RemainingArgs.Count -gt 0) { $RemainingArgs[0] } else { '' }
+        $Version = if ($RemainingArgs.Count -gt 1) { $RemainingArgs[1] } else { '' }
+        $RemainingArgs = if ($RemainingArgs.Count -gt 2) { @($RemainingArgs[2..($RemainingArgs.Count-1)]) } else { @() }
+        $homeParsed = $true
+    }
+    # Check if --home is in $RemainingArgs
+    elseif ($RemainingArgs.Count -gt 0) {
+        if ($RemainingArgs -is [string]) {
+            $RemainingArgs = $RemainingArgs -split '\s+'
+        }
+        for ($i = 0; $i -lt $RemainingArgs.Count; $i++) {
+            if ($RemainingArgs[$i] -eq '--home' -and ($i + 1) -lt $RemainingArgs.Count) {
+                $PvmHomePath = $RemainingArgs[$i + 1]
+                $RemainingArgs = @($RemainingArgs[0..($i-1)]) + @($RemainingArgs[($i+2)..($RemainingArgs.Count-1)])
+                $homeParsed = $true
+                break
+            }
         }
     }
+    if ($homeParsed) {
+        $script:PVM_HOME = $PvmHomePath
+        $script:PVM_VERSIONS_DIR = Join-Path $script:PVM_HOME "versions"
+        $script:PVM_CURRENT_FILE = Join-Path $script:PVM_HOME "current"
+        $script:PVM_DEFAULT_FILE = Join-Path $script:PVM_HOME "default"
+        $script:PVM_SETTINGS_FILE = Join-Path $script:PVM_HOME "settings.json"
+        $script:PVM_SYMLINK = Join-Path $script:PVM_HOME "python"
+        $script:PVM_SHIMS_DIR = Join-Path $script:PVM_HOME "shims"
+        $script:PVM_VENVS_DIR = Join-Path $script:PVM_HOME "venvs"
+    }
 }
+
 Initialize-Pvm
 
 # Handle help flags
@@ -1775,10 +1838,16 @@ switch ($Command) {
     'arch' { Show-PlatformInfo }
     'platform' { Show-PlatformInfo }
     'venv' {
-        # Collect remaining args as: pvm venv <subcommand> [name]
-        $subCmd = $Version  # Position 1 maps to subcommand
-        $remainingArgs = $RemainingArgs
-        $subName = if ($remainingArgs.Count -gt 0) { $remainingArgs[0] } else { '' }
+        # Support: pvm venv <name> | pvm venv <create|list|remove|activate> [name]
+        $validSubCmds = @('create', 'list', 'remove', 'activate')
+        if ($Version -in $validSubCmds) {
+            $subCmd = $Version
+            $subName = if ($RemainingArgs.Count -gt 0) { $RemainingArgs[0] } else { '' }
+        }
+        else {
+            $subCmd = ''
+            $subName = $Version
+        }
         Invoke-PvmVenv -SubCommand $subCmd -Name $subName
     }
     'pip' {

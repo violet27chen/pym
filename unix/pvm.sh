@@ -1508,7 +1508,7 @@ pvm() {
                     return 1
                 fi
                 local resolved
-                resolved=$(pvm_resolve_version "$target")
+                resolved=$(pvm_resolve_available "$target")
                 if [[ -z "$resolved" ]]; then
                     echo -e "${RED}Error: Version '$target' not found.${NC}"
                     return 1
