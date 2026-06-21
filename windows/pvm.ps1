@@ -347,6 +347,7 @@ Commands:
     config [mirror]         Configure mirror (show current if no argument)
     arch                    Show detected system architecture
     pin [version]           Pin Python version for current directory (.python-version)
+    unpin                   Remove pinned version from current directory
 
     alias default <ver>     Set default version (auto-used on new terminal)
     unalias default         Remove default version
@@ -2011,16 +2012,26 @@ switch ($Command) {
     }
     'pin' {
         # Pin Python version for current directory (.python-version file)
-        if ([string]::IsNullOrEmpty($Target)) {
-            # Show current pinned version
+        if ([string]::IsNullOrEmpty($Target) -or $Target -eq '--remove' -or $Target -eq '-r') {
             $localVersionFile = Join-Path (Get-Location) ".python-version"
+            if ($Target -eq '--remove' -or $Target -eq '-r') {
+                # Remove pinned version
+                if (Test-Path $localVersionFile) {
+                    Remove-Item $localVersionFile -Force
+                    Write-Host "Removed .python-version pin from this directory." -ForegroundColor Green
+                } else {
+                    Write-Host "No version pinned in this directory." -ForegroundColor Yellow
+                }
+                return
+            }
+            # Show current pinned version
             if (Test-Path $localVersionFile) {
                 $pinnedVer = (Get-Content $localVersionFile -Raw).Trim()
                 Write-Host "Pinned version: $pinnedVer" -ForegroundColor Green
                 Write-Host "File: $localVersionFile" -ForegroundColor DarkGray
             } else {
                 Write-Host "No version pinned in this directory." -ForegroundColor Yellow
-                Write-Host "Usage: pvm pin <version>" -ForegroundColor Yellow
+                Write-Host "Usage: pvm pin <version> | pvm pin --remove" -ForegroundColor Yellow
             }
             return
         }
@@ -2033,6 +2044,16 @@ switch ($Command) {
         Set-Content -Path $localVersionFile -Value $resolved -Encoding UTF8 -NoNewline
         Write-Host "Pinned Python $resolved for this directory" -ForegroundColor Green
         Write-Host "File: $localVersionFile" -ForegroundColor DarkGray
+    }
+    'unpin' {
+        # Remove .python-version file
+        $localVersionFile = Join-Path (Get-Location) ".python-version"
+        if (Test-Path $localVersionFile) {
+            Remove-Item $localVersionFile -Force
+            Write-Host "Removed .python-version pin from this directory." -ForegroundColor Green
+        } else {
+            Write-Host "No version pinned in this directory." -ForegroundColor Yellow
+        }
     }
     'tree' {
         # Show dependency tree
@@ -2207,8 +2228,14 @@ switch ($Command) {
             Write-Host "Error: No Python version active. Run: pvm use <version>" -ForegroundColor Red
             exit 1
         }
+        if (-not (Test-Path "pyproject.toml")) {
+            Write-Host "Error: No pyproject.toml found. Run 'pvm init' first." -ForegroundColor Red
+            exit 1
+        }
         $pipExe = Join-Path (Split-Path $pythonExe) "Scripts\pip.exe"
         & $pipExe install build --no-warn-script-location 2>&1 | Out-Null
+        # Ensure virtualenv is available as fallback for venv module
+        & $pipExe install virtualenv --no-warn-script-location 2>&1 | Out-Null
         $buildExe = Join-Path (Split-Path $pythonExe) "Scripts\pyproject-build.exe"
         if (-not (Test-Path $buildExe)) {
             $buildExe = Join-Path (Split-Path $pythonExe) "Scripts\python.exe"
@@ -2216,13 +2243,22 @@ switch ($Command) {
         } else {
             & $buildExe
         }
-        Write-Host "Build complete. Check dist/ folder." -ForegroundColor Green
+        if ($LASTEXITCODE -eq 0 -and (Test-Path "dist")) {
+            Write-Host "Build complete. Check dist/ folder." -ForegroundColor Green
+        } else {
+            Write-Host "Build failed." -ForegroundColor Red
+            exit 1
+        }
     }
     'publish' {
         # Publish package to PyPI
         $pythonExe = Get-CurrentPythonExe
         if (-not $pythonExe) {
             Write-Host "Error: No Python version active. Run: pvm use <version>" -ForegroundColor Red
+            exit 1
+        }
+        if (-not (Test-Path "dist")) {
+            Write-Host "Error: No dist/ folder found. Run 'pvm build' first." -ForegroundColor Red
             exit 1
         }
         $pipExe = Join-Path (Split-Path $pythonExe) "Scripts\pip.exe"

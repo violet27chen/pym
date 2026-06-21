@@ -249,6 +249,7 @@ Commands:
     config [mirror]         Configure mirror (show current if no argument)
     arch                    Show detected system architecture
     pin [version]           Pin Python version for current directory (.python-version)
+    unpin                   Remove pinned version from current directory
 
     alias default <ver>     Set default version (auto-used on new terminal)
     unalias default         Remove default version
@@ -1635,7 +1636,16 @@ pvm() {
             ;;
         pin)
             # Pin Python version for current directory
-            if [[ -z "$1" ]]; then
+            if [[ -z "$1" || "$1" == "--remove" || "$1" == "-r" ]]; then
+                if [[ "$1" == "--remove" || "$1" == "-r" ]]; then
+                    if [[ -f ".python-version" ]]; then
+                        rm -f ".python-version"
+                        echo -e "${GREEN}Removed .python-version pin from this directory.${NC}"
+                    else
+                        echo -e "${YELLOW}No version pinned in this directory.${NC}"
+                    fi
+                    return
+                fi
                 if [[ -f ".python-version" ]]; then
                     local pinned_ver
                     pinned_ver=$(cat ".python-version" | tr -d '[:space:]')
@@ -1643,7 +1653,7 @@ pvm() {
                     echo -e "${GRAY}File: .python-version${NC}"
                 else
                     echo -e "${YELLOW}No version pinned in this directory.${NC}"
-                    echo -e "${YELLOW}Usage: pvm pin <version>${NC}"
+                    echo -e "${YELLOW}Usage: pvm pin <version> | pvm pin --remove${NC}"
                 fi
                 return
             fi
@@ -1656,6 +1666,15 @@ pvm() {
             echo -n "$resolved" > ".python-version"
             echo -e "${GREEN}Pinned Python $resolved for this directory${NC}"
             echo -e "${GRAY}File: .python-version${NC}"
+            ;;
+        unpin)
+            # Remove .python-version file
+            if [[ -f ".python-version" ]]; then
+                rm -f ".python-version"
+                echo -e "${GREEN}Removed .python-version pin from this directory.${NC}"
+            else
+                echo -e "${YELLOW}No version pinned in this directory.${NC}"
+            fi
             ;;
         tree)
             # Show dependency tree
@@ -1806,11 +1825,19 @@ pvm() {
                 echo -e "${RED}Error: No Python version active. Run: pvm use <version>${NC}"
                 return 1
             fi
+            if [[ ! -f "pyproject.toml" ]]; then
+                echo -e "${RED}Error: No pyproject.toml found. Run 'pvm init' first.${NC}"
+                return 1
+            fi
             local pip_exe="$PVM_HOME/versions/$current/bin/pip3"
             local python_exe="$PVM_HOME/versions/$current/bin/python3"
             "$pip_exe" install build --no-warn-script-location 2>/dev/null
-            "$python_exe" -m build
-            echo -e "${GREEN}Build complete. Check dist/ folder.${NC}"
+            if "$python_exe" -m build; then
+                echo -e "${GREEN}Build complete. Check dist/ folder.${NC}"
+            else
+                echo -e "${RED}Build failed.${NC}"
+                return 1
+            fi
             ;;
         publish)
             # Publish package to PyPI
@@ -1818,6 +1845,10 @@ pvm() {
             current=$(pvm_get_current)
             if [[ -z "$current" ]]; then
                 echo -e "${RED}Error: No Python version active. Run: pvm use <version>${NC}"
+                return 1
+            fi
+            if [[ ! -d "dist" ]]; then
+                echo -e "${RED}Error: No dist/ folder found. Run 'pvm build' first.${NC}"
                 return 1
             fi
             local pip_exe="$PVM_HOME/versions/$current/bin/pip3"
