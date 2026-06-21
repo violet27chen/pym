@@ -13,20 +13,22 @@
 param(
     [Parameter(Position = 0)]
     [string]$Command,
-    
+
     [Parameter(Position = 1)]
     [string]$Version,
-    
+
     [Parameter()]
     [ValidateSet('32', '64', 'arm64')]
     [string]$Arch = '',
-    
+
     [Parameter()]
-    [Alias('Home')]
     [string]$PvmHomePath = '',
-    
+
     [Parameter()]
-    [switch]$Help
+    [switch]$Help,
+
+    [Parameter(ValueFromRemainingArguments)]
+    [string[]]$RemainingArgs = @()
 )
 
 # Set console output encoding to UTF-8 to prevent encoding issues
@@ -90,6 +92,7 @@ if (-not $script:PVM_HOME) {
 # Set all derived paths
 $script:PVM_VERSIONS_DIR = Join-Path $script:PVM_HOME "versions"
 $script:PVM_CURRENT_FILE = Join-Path $script:PVM_HOME "current"
+$script:PVM_DEFAULT_FILE = Join-Path $script:PVM_HOME "default"
 $script:PVM_SETTINGS_FILE = Join-Path $script:PVM_HOME "settings.json"
 $script:PVM_SYMLINK = Join-Path $script:PVM_HOME "python"
 $script:PVM_SHIMS_DIR = Join-Path $script:PVM_HOME "shims"
@@ -343,6 +346,10 @@ Commands:
     config [mirror]         Configure mirror (show current if no argument)
     arch                    Show detected system architecture
 
+    alias default <ver>     Set default version (auto-used on new terminal)
+    unalias default         Remove default version
+    alias                   Show all aliases
+
     venv <name>             Create a virtual environment
     venv list               List all virtual environments
     venv remove <name>      Remove a virtual environment
@@ -411,12 +418,82 @@ function Get-InstalledVersions {
 function Get-CurrentVersion {
     <#
     .SYNOPSIS
-        Get the currently active Python version
+        Get the currently active Python version (current > default > none)
+    #>
+    if (Test-Path $script:PVM_CURRENT_FILE) {
+        return (Get-Content $script:PVM_CURRENT_FILE -Raw).Trim()
+    }
+    # Fall back to default version if no current version is set
+    if (Test-Path $script:PVM_DEFAULT_FILE) {
+        return (Get-Content $script:PVM_DEFAULT_FILE -Raw).Trim()
+    }
+    return $null
+}
+
+function Get-ExplicitCurrentVersion {
+    <#
+    .SYNOPSIS
+        Get the explicitly set current version (without default fallback)
     #>
     if (Test-Path $script:PVM_CURRENT_FILE) {
         return (Get-Content $script:PVM_CURRENT_FILE -Raw).Trim()
     }
     return $null
+}
+
+function Get-DefaultVersion {
+    <#
+    .SYNOPSIS
+        Get the default Python version
+    #>
+    if (Test-Path $script:PVM_DEFAULT_FILE) {
+        return (Get-Content $script:PVM_DEFAULT_FILE -Raw).Trim()
+    }
+    return $null
+}
+
+function Set-DefaultVersion {
+    <#
+    .SYNOPSIS
+        Set the default Python version
+    #>
+    param([string]$Version)
+    Set-Content -Path $script:PVM_DEFAULT_FILE -Value $Version -NoNewline
+}
+
+function Remove-DefaultVersion {
+    <#
+    .SYNOPSIS
+        Remove the default Python version
+    #>
+    if (Test-Path $script:PVM_DEFAULT_FILE) {
+        Remove-Item -Path $script:PVM_DEFAULT_FILE -Force
+    }
+}
+
+function Show-Aliases {
+    <#
+    .SYNOPSIS
+        Show configured aliases (default, etc.)
+    #>
+    $default = Get-DefaultVersion
+    $current = Get-ExplicitCurrentVersion
+
+    Write-Host ""
+    if ($default) {
+        $installed = Get-InstalledVersions
+        $exists = $installed -contains $default
+        $status = if ($exists) { "installed" } else { "NOT installed" }
+        Write-Host "  default -> $default ($status)" -ForegroundColor Green
+    }
+    else {
+        Write-Host "  No default version set." -ForegroundColor Yellow
+        Write-Host "  Use 'pvm alias default <version>' to set one." -ForegroundColor DarkGray
+    }
+    if ($current) {
+        Write-Host "  current -> $current" -ForegroundColor Cyan
+    }
+    Write-Host ""
 }
 
 function Show-InstalledVersions {
@@ -1150,23 +1227,32 @@ function Show-CurrentVersion {
     .SYNOPSIS
         Show the currently active Python version
     #>
+    $explicitCurrent = Get-ExplicitCurrentVersion
+    $default = Get-DefaultVersion
     $current = Get-CurrentVersion
-    
-    if ($null -eq $current -or $current -eq '') {
-        Write-Host ""
-        Write-Host "  No Python version is currently active." -ForegroundColor Yellow
+
+    Write-Host ""
+    if ($explicitCurrent) {
+        Write-Host "  Current version: $explicitCurrent" -ForegroundColor Green
+        if ($default) {
+            Write-Host "  Default version: $default" -ForegroundColor DarkGray
+        }
+    }
+    elseif ($default) {
+        Write-Host "  Current version: $default (default)" -ForegroundColor Green
+    }
+    else {
+        Write-Host "  No Python version is active." -ForegroundColor Yellow
         Write-Host ""
         Write-Host "  To get started:" -ForegroundColor White
         Write-Host "    pvm list available    # See available versions" -ForegroundColor Cyan
         Write-Host "    pvm install 3.12.4    # Install a version" -ForegroundColor Cyan
         Write-Host "    pvm use 3.12.4        # Activate it" -ForegroundColor Cyan
+        Write-Host "    pvm alias default 3.12.4  # Set default" -ForegroundColor Cyan
         Write-Host ""
         return
     }
-    
-    Write-Host ""
-    Write-Host "  Current version: $current" -ForegroundColor Green
-    
+
     $pythonExe = Join-Path $script:PVM_SYMLINK "python.exe"
     if (Test-Path $pythonExe) {
         $versionOutput = & $pythonExe --version 2>&1
@@ -1577,13 +1663,16 @@ build-backend = "setuptools.backends._legacy:_Backend"
 # Main execution
 # Manual --home parsing (handles: pvm install 3.12 --home D:\pvm)
 if (-not $PvmHomePath) {
-    for ($i = 0; $i -lt $args.Count; $i++) {
-        if ($args[$i] -eq '--home' -and ($i + 1) -lt $args.Count) {
-            $PvmHomePath = $args[$i + 1]
+    for ($i = 0; $i -lt $RemainingArgs.Count; $i++) {
+        if ($RemainingArgs[$i] -eq '--home' -and ($i + 1) -lt $RemainingArgs.Count) {
+            $PvmHomePath = $RemainingArgs[$i + 1]
+            # Remove --home and its value from RemainingArgs
+            $RemainingArgs = @($RemainingArgs[0..($i-1)]) + @($RemainingArgs[($i+2)..($RemainingArgs.Count-1)])
             # Re-derive paths
             $script:PVM_HOME = $PvmHomePath
             $script:PVM_VERSIONS_DIR = Join-Path $script:PVM_HOME "versions"
             $script:PVM_CURRENT_FILE = Join-Path $script:PVM_HOME "current"
+            $script:PVM_DEFAULT_FILE = Join-Path $script:PVM_HOME "default"
             $script:PVM_SETTINGS_FILE = Join-Path $script:PVM_HOME "settings.json"
             $script:PVM_SYMLINK = Join-Path $script:PVM_HOME "python"
             $script:PVM_SHIMS_DIR = Join-Path $script:PVM_HOME "shims"
@@ -1653,25 +1742,55 @@ switch ($Command) {
     'config' {
         Set-PvmConfig -MirrorName $Version
     }
+    'alias' {
+        # pvm alias [default <version>] or pvm alias (show all)
+        if ($Version -eq 'default') {
+            $target = if ($RemainingArgs.Count -gt 0) { $RemainingArgs[0] } else { '' }
+            if ([string]::IsNullOrEmpty($target)) {
+                Write-Host "Usage: pvm alias default <version>" -ForegroundColor Yellow
+                return
+            }
+            # Resolve partial version
+            $resolved = Resolve-PythonVersion -Version $target
+            if (-not $resolved) {
+                Write-Host "Error: Version '$target' not found." -ForegroundColor Red
+                return
+            }
+            Set-DefaultVersion -Version $resolved
+            Write-Host "Default version set to $resolved" -ForegroundColor Green
+        }
+        else {
+            Show-Aliases
+        }
+    }
+    'unalias' {
+        if ($Version -eq 'default') {
+            Remove-DefaultVersion
+            Write-Host "Default version removed." -ForegroundColor Green
+        }
+        else {
+            Write-Host "Usage: pvm unalias default" -ForegroundColor Yellow
+        }
+    }
     'arch' { Show-PlatformInfo }
     'platform' { Show-PlatformInfo }
     'venv' {
         # Collect remaining args as: pvm venv <subcommand> [name]
         $subCmd = $Version  # Position 1 maps to subcommand
-        $remainingArgs = $args
+        $remainingArgs = $RemainingArgs
         $subName = if ($remainingArgs.Count -gt 0) { $remainingArgs[0] } else { '' }
         Invoke-PvmVenv -SubCommand $subCmd -Name $subName
     }
     'pip' {
         $subCmd = $Version
-        $remainingArgs = $args
+        $remainingArgs = $RemainingArgs
         Invoke-PvmPip -SubCommand $subCmd -ExtraArgs $remainingArgs
     }
     'init' {
         Invoke-PvmProject -SubCommand "init"
     }
     'add' {
-        $remainingArgs = $args
+        $remainingArgs = $RemainingArgs
         if ([string]::IsNullOrEmpty($Version) -and $remainingArgs.Count -gt 0) {
             $Version = $remainingArgs[0]
             $remainingArgs = $remainingArgs[1..($remainingArgs.Count - 1)]
@@ -1680,7 +1799,7 @@ switch ($Command) {
         Invoke-PvmProject -SubCommand "add" -ExtraArgs $pkgArgs
     }
     'remove' {
-        $remainingArgs = $args
+        $remainingArgs = $RemainingArgs
         if ([string]::IsNullOrEmpty($Version) -and $remainingArgs.Count -gt 0) {
             $Version = $remainingArgs[0]
             $remainingArgs = $remainingArgs[1..($remainingArgs.Count - 1)]
@@ -1689,7 +1808,7 @@ switch ($Command) {
         Invoke-PvmProject -SubCommand "remove" -ExtraArgs $pkgArgs
     }
     'run' {
-        $remainingArgs = @($Version) + $args | Where-Object { $_ }
+        $remainingArgs = @($Version) + $RemainingArgs | Where-Object { $_ }
         Invoke-PvmProject -SubCommand "run" -ExtraArgs $remainingArgs
     }
     default {

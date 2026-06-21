@@ -175,8 +175,10 @@ function Uninstall-Pvm {
         Write-ColorOutput "      Warning: Could not remove PVM_HOME environment variable." "Yellow"
     }
 
-    # Step 2: Ask about pip config
-    Write-ColorOutput "[2/4] Checking pip configuration..." "Yellow"
+    # Step 2: Remove pip config and pvmhome config
+    Write-ColorOutput "[2/4] Removing configuration files..." "Yellow"
+
+    # Remove pip mirror config
     if (Test-Path $pipConfigFile) {
         $removePip = $false
         if (-not $Force) {
@@ -211,6 +213,21 @@ function Uninstall-Pvm {
     }
     else {
         Write-ColorOutput "      No pip config found, skipping." "DarkGray"
+    }
+
+    # Remove .pvmhome config file (stores custom PVM_HOME path)
+    $pvmHomeConfig = Join-Path $env:USERPROFILE ".pvmhome"
+    if (Test-Path $pvmHomeConfig) {
+        try {
+            Remove-Item -Path $pvmHomeConfig -Force
+            Write-ColorOutput "      .pvmhome config removed." "Green"
+        }
+        catch {
+            Write-ColorOutput "      Warning: Could not remove .pvmhome config." "Yellow"
+        }
+    }
+    else {
+        Write-ColorOutput "      No .pvmhome config found, skipping." "DarkGray"
     }
 
     # Step 3: Remove the .pvm directory
@@ -252,6 +269,7 @@ function Uninstall-Pvm {
     }
     Write-ColorOutput "    - PATH entries" "DarkGray"
     Write-ColorOutput "    - PVM_HOME environment variable" "DarkGray"
+    Write-ColorOutput "    - .pvmhome config file" "DarkGray"
     Write-ColorOutput "" "White"
     Write-ColorOutput "  Note: Open a new terminal window for changes to take effect." "Yellow"
     Write-ColorOutput "" "White"

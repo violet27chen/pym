@@ -58,6 +58,7 @@ fi
 # Directories
 PVM_VERSIONS_DIR="$PVM_HOME/versions"
 PVM_CURRENT_FILE="$PVM_HOME/current"
+PVM_DEFAULT_FILE="$PVM_HOME/default"
 PVM_SETTINGS_FILE="$PVM_HOME/settings.json"
 PVM_SYMLINK="$PVM_HOME/python"
 PVM_SHIMS_DIR="$PVM_HOME/shims"
@@ -248,6 +249,10 @@ Commands:
     config [mirror]         Configure mirror (show current if no argument)
     arch                    Show detected system architecture
 
+    alias default <ver>     Set default version (auto-used on new terminal)
+    unalias default         Remove default version
+    alias                   Show all aliases
+
     venv <name>             Create a virtual environment
     venv list               List all virtual environments
     venv remove <name>      Remove a virtual environment
@@ -305,11 +310,63 @@ pvm_get_installed() {
     fi
 }
 
-# Get current version
+# Get current version (current > default > none)
 pvm_get_current() {
     if [[ -f "$PVM_CURRENT_FILE" ]]; then
         cat "$PVM_CURRENT_FILE" | tr -d '[:space:]'
+    elif [[ -f "$PVM_DEFAULT_FILE" ]]; then
+        cat "$PVM_DEFAULT_FILE" | tr -d '[:space:]'
     fi
+}
+
+# Get explicitly set current version (without default fallback)
+pvm_get_explicit_current() {
+    if [[ -f "$PVM_CURRENT_FILE" ]]; then
+        cat "$PVM_CURRENT_FILE" | tr -d '[:space:]'
+    fi
+}
+
+# Get default version
+pvm_get_default() {
+    if [[ -f "$PVM_DEFAULT_FILE" ]]; then
+        cat "$PVM_DEFAULT_FILE" | tr -d '[:space:]'
+    fi
+}
+
+# Set default version
+pvm_set_default() {
+    echo -n "$1" > "$PVM_DEFAULT_FILE"
+}
+
+# Remove default version
+pvm_remove_default() {
+    rm -f "$PVM_DEFAULT_FILE"
+}
+
+# Show aliases
+pvm_alias() {
+    local default
+    default=$(pvm_get_default)
+    local current
+    current=$(pvm_get_explicit_current)
+
+    echo ""
+    if [[ -n "$default" ]]; then
+        local installed
+        installed=$(pvm_get_installed)
+        local exists
+        exists=$(echo "$installed" | grep -c "^${default}$" 2>/dev/null || echo 0)
+        local status="installed"
+        [[ "$exists" -eq 0 ]] && status="NOT installed"
+        echo -e "  ${GREEN}default -> $default ($status)${NC}"
+    else
+        echo -e "  ${YELLOW}No default version set.${NC}"
+        echo -e "  ${GRAY}Use 'pvm alias default <version>' to set one.${NC}"
+    fi
+    if [[ -n "$current" ]]; then
+        echo -e "  ${CYAN}current -> $current${NC}"
+    fi
+    echo ""
 }
 
 # List installed versions
@@ -958,24 +1015,33 @@ pvm_use() {
 
 # Show current version
 pvm_current() {
+    local explicit_current
+    explicit_current=$(pvm_get_explicit_current)
+    local default
+    default=$(pvm_get_default)
     local current
     current=$(pvm_get_current)
-    
-    if [[ -z "$current" ]]; then
-        echo ""
-        echo -e "${YELLOW}  No Python version is currently active.${NC}"
+
+    echo ""
+    if [[ -n "$explicit_current" ]]; then
+        echo -e "${GREEN}  Current version: $explicit_current${NC}"
+        if [[ -n "$default" ]]; then
+            echo -e "${GRAY}  Default version: $default${NC}"
+        fi
+    elif [[ -n "$default" ]]; then
+        echo -e "${GREEN}  Current version: $default (default)${NC}"
+    else
+        echo -e "${YELLOW}  No Python version is active.${NC}"
         echo ""
         echo "  To get started:"
         echo -e "${CYAN}    pvm list available    # See available versions${NC}"
         echo -e "${CYAN}    pvm install 3.12.4    # Install a version${NC}"
         echo -e "${CYAN}    pvm use 3.12.4        # Activate it${NC}"
+        echo -e "${CYAN}    pvm alias default 3.12.4  # Set default${NC}"
         echo ""
         return
     fi
-    
-    echo ""
-    echo -e "${GREEN}  Current version: $current${NC}"
-    
+
     local python_exe="$PVM_SYMLINK/bin/python3"
     if [[ -x "$python_exe" ]]; then
         local python_version
@@ -1433,6 +1499,33 @@ pvm() {
             ;;
         config)
             pvm_config "$1"
+            ;;
+        alias)
+            if [[ "$1" == "default" ]]; then
+                local target="$2"
+                if [[ -z "$target" ]]; then
+                    echo -e "${YELLOW}Usage: pvm alias default <version>${NC}"
+                    return 1
+                fi
+                local resolved
+                resolved=$(pvm_resolve_version "$target")
+                if [[ -z "$resolved" ]]; then
+                    echo -e "${RED}Error: Version '$target' not found.${NC}"
+                    return 1
+                fi
+                pvm_set_default "$resolved"
+                echo -e "${GREEN}Default version set to $resolved${NC}"
+            else
+                pvm_alias
+            fi
+            ;;
+        unalias)
+            if [[ "$1" == "default" ]]; then
+                pvm_remove_default
+                echo -e "${GREEN}Default version removed.${NC}"
+            else
+                echo -e "${YELLOW}Usage: pvm unalias default${NC}"
+            fi
             ;;
         arch|platform)
             pvm_show_platform
