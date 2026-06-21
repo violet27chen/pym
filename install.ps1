@@ -80,14 +80,20 @@ function Write-FileAscii {
     [System.IO.File]::WriteAllText($Path, $Content, [System.Text.Encoding]::ASCII)
 }
 
+# Reliable HTTP client (WebClient handles User-Agent correctly in PS 5.1)
+function Get-UrlText {
+    param([string]$Url)
+    $wc = New-Object System.Net.WebClient
+    $wc.Headers.Add("User-Agent", "pvm-installer/1.0.0")
+    $wc.Encoding = [System.Text.Encoding]::UTF8
+    $wc.DownloadString($Url)
+}
+
 function Install-Pvm {
     Write-ColorOutput "`n==================================" "Cyan"
     Write-ColorOutput "  pvm - Python Version Manager" "Cyan"
     Write-ColorOutput "  Windows Installer" "Cyan"
     Write-ColorOutput "==================================`n" "Cyan"
-
-    # Common headers for all HTTP requests (avoid CDN 403)
-    $script:HttpHeaders = @{ "User-Agent" = "pvm-installer/1.0.0" }
 
     # Show download source priority
     $primarySource = $downloadSources[0].Name
@@ -120,17 +126,17 @@ function Install-Pvm {
         if ($downloaded) { break }
         try {
             Write-ColorOutput "  Trying $($source.Name)..." "DarkGray"
-            $ps1Content = (Invoke-WebRequest -Uri "$($source.Base)/windows/pvm.ps1" -UseBasicParsing -Headers $script:HttpHeaders).Content
+            $ps1Content = Get-UrlText -Url "$($source.Base)/windows/pvm.ps1"
             Write-FileNoBom (Join-Path $windowsDir "pvm.ps1") $ps1Content
 
-            $cmdContent = (Invoke-WebRequest -Uri "$($source.Base)/windows/pvm.cmd" -UseBasicParsing -Headers $script:HttpHeaders).Content
+            $cmdContent = Get-UrlText -Url "$($source.Base)/windows/pvm.cmd"
             Write-FileAscii (Join-Path $windowsDir "pvm.cmd") $cmdContent
 
-            $elevateContent = (Invoke-WebRequest -Uri "$($source.Base)/windows/elevate.cmd" -UseBasicParsing -Headers $script:HttpHeaders).Content
+            $elevateContent = Get-UrlText -Url "$($source.Base)/windows/elevate.cmd"
             Write-FileAscii (Join-Path $windowsDir "elevate.cmd") $elevateContent
 
             # Download uninstall script
-            $uninstallContent = (Invoke-WebRequest -Uri "$($source.Base)/uninstall.ps1" -UseBasicParsing -Headers $script:HttpHeaders).Content
+            $uninstallContent = Get-UrlText -Url "$($source.Base)/uninstall.ps1"
             Write-FileNoBom (Join-Path $InstallDir "uninstall.ps1") $uninstallContent
 
             Write-ColorOutput "  Downloaded from $($source.Name)." "Green"

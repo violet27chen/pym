@@ -104,6 +104,22 @@ if (-not (Test-Path $script:PVM_HOME)) {
 # HTTP User-Agent (avoids CDN 403 errors)
 $script:HttpHeaders = @{ "User-Agent" = "pvm/$($script:PVM_VERSION)" }
 
+# Reliable HTTP client (WebClient handles User-Agent correctly in PS 5.1)
+function Get-UrlText {
+    param([string]$Url, [int]$TimeoutSec = 15)
+    $wc = New-Object System.Net.WebClient
+    $wc.Headers.Add("User-Agent", $script:HttpHeaders["User-Agent"])
+    $wc.Encoding = [System.Text.Encoding]::UTF8
+    $wc.DownloadString($Url)
+}
+
+function Save-UrlFile {
+    param([string]$Url, [string]$OutFile, [int]$TimeoutSec = 300)
+    $wc = New-Object System.Net.WebClient
+    $wc.Headers.Add("User-Agent", $script:HttpHeaders["User-Agent"])
+    $wc.DownloadFile($Url, $OutFile)
+}
+
 # Default Python download mirror
 $script:DEFAULT_MIRROR = "https://www.python.org/ftp/python"
 
@@ -171,10 +187,8 @@ function Get-AvailableVersions {
     )
     foreach ($url in $cdnUrls) {
         try {
-            $ProgressPreference = 'SilentlyContinue'
-            $response = Invoke-WebRequest -Uri $url -UseBasicParsing -TimeoutSec 10 -Headers $script:HttpHeaders
-            $ProgressPreference = 'Continue'
-            $data = $response.Content | ConvertFrom-Json
+            $responseText = Get-UrlText -Url $url -TimeoutSec 10
+            $data = $responseText | ConvertFrom-Json
             if ($data.versions -and $data.versions.Count -gt 0) {
                 $script:AVAILABLE_VERSIONS = @($data.versions)
                 # Cache locally
@@ -188,10 +202,8 @@ function Get-AvailableVersions {
     # 3. Try python.org API
     Write-Host "  Trying python.org API..." -ForegroundColor DarkGray
     try {
-        $ProgressPreference = 'SilentlyContinue'
-        $response = Invoke-WebRequest -Uri "https://www.python.org/api/v2/downloads/release/?is_published=true&pre_release=false" -UseBasicParsing -TimeoutSec 15 -Headers $script:HttpHeaders
-        $ProgressPreference = 'Continue'
-        $releases = $response.Content | ConvertFrom-Json
+        $apiText = Get-UrlText -Url "https://www.python.org/api/v2/downloads/release/?is_published=true&pre_release=false" -TimeoutSec 15
+        $releases = $apiText | ConvertFrom-Json
         $versions = @()
         foreach ($release in $releases) {
             if ($release.name -match 'Python\s+([\d]+\.[\d]+\.[\d]+)') {
@@ -725,9 +737,7 @@ function Install-PythonVersion {
         $getPipPath = Join-Path $versionDir "get-pip.py"
         
         try {
-            $ProgressPreference = 'SilentlyContinue'
-            Invoke-WebRequest -Uri $getPipUrl -OutFile $getPipPath -UseBasicParsing -Headers $script:HttpHeaders
-            $ProgressPreference = 'Continue'
+            Save-UrlFile -Url $getPipUrl -OutFile $getPipPath
             
             $pythonExe = Join-Path $versionDir "python.exe"
             & $pythonExe $getPipPath --no-warn-script-location 2>&1 | Out-Null
